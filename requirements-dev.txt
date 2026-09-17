@@ -1,0 +1,4 @@
+# 运行策略本身不需要第三方库（momentum_timing 只用标准库，
+# QMT 客户端自带 numpy / pandas）。以下仅为跑单元测试所需。
+pytest>=7.0
+numpy>=1.20
