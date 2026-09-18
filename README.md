@@ -32,15 +32,11 @@ momentum_timing/          纯计算内核（只依赖标准库，可单元测试
 qmt/
 └── strategy_backtest.py  QMT 回测脚本：init / handlebar / stop + 取数 + 下单
 tools/
-<<<<<<< HEAD
-└── bundle_qmt.py         打包成单文件，方便直接贴进 QMT 客户端
-single_file/              生成好的单文件（UTF-8 / GBK 两版），复制即用
-tests/                    275 个单元测试 + 模拟 QMT / xtdata 环境的端到端测试
-=======
 ├── bundle_qmt.py         打包成单文件，方便直接贴进 QMT 客户端
 └── import_constituents_xlsx.py  Excel 历史成分股 -> 回测缓存 CSV
-tests/                    290 个单元测试 + 模拟 QMT 环境的端到端测试
->>>>>>> claude/happy-bell-nuwx17
+single_file/              生成好的单文件（UTF-8 / GBK 两版），复制即用
+data/hs300_constituents.csv  沪深300 历史成分股（point-in-time，回测输入）
+tests/                    291 个单元测试 + 模拟 QMT / xtdata 环境的端到端测试
 reference/                原始脚本存档
 ```
 
