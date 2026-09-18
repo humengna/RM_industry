@@ -1,7 +1,11 @@
 # 动量择时策略（QMT 回测版）
 
-A 股单标的轮动策略：**概念/全市场股票池 → 对数线性回归动量打分 → 风控体检（沿排名顺延）
-→ 动量分数连续下降择时 + 大盘均线/RSRS 择时 → 满仓换股 → 移动止损 + -15% 硬止损**。
+A 股单标的轮动策略：**概念/全市场股票池 → 对数线性回归动量打分 → 取第 1 名 →
+动量分数连续下降择时 → 满仓换股 → -15% 硬止损**。
+
+> **默认按最开始的选股逻辑运行**（`config.STRATEGY_MODE = 'original'`），
+> 不做任何风控过滤。风控模块（日线 / 分钟线 / 大盘 / 移动止损）代码都还在，
+> 把这一行改成 `'risk'` 就能整套加回来，阈值见 [`docs/risk.md`](docs/risk.md)。
 
 策略逻辑与参数来自原始的 QMT 单文件脚本（存档于
 [`reference/original_qmt_backtest.py`](reference/original_qmt_backtest.py)），
@@ -24,7 +28,7 @@ qmt/
 tools/
 └── bundle_qmt.py         打包成单文件，方便直接贴进 QMT 客户端
 single_file/              生成好的单文件（UTF-8 / GBK 两版），复制即用
-tests/                    183 个单元测试 + 模拟 QMT 环境的端到端测试
+tests/                    191 个单元测试 + 模拟 QMT 环境的端到端测试
 reference/                原始脚本存档
 ```
 
@@ -67,7 +71,7 @@ PROJECT_ROOT = r'D:\quant\RM_industry'
 
 ```bash
 pip install -r requirements-dev.txt
-python -m pytest            # 183 passed
+python -m pytest            # 191 passed
 ```
 
 测试不需要 QMT：`tests/fake_qmt.py` 模拟了 `ContextInfo`、`passorder`、
@@ -78,17 +82,17 @@ python -m pytest            # 183 passed
 | 步骤 | 做什么 | 代码位置 |
 | --- | --- | --- |
 | 0 | 前 `WARMUP_BARS`(=15) 根 K 线数据不足，直接跳过 | `handlebar` |
-| 1 | 大盘风控：沪深 300 跌破 MA20 则不开新仓（可配置为清仓） | `check_market` + `risk.market_is_healthy` |
-| 2 | 取板块成分股，过滤停牌 / ST / 市值不在 30~500 亿 / 跌停 | `get_stock_pool` + `universe.passes_filters` |
-| 3 | 对每只股票的对数收盘价做线性回归，按 `年化收益率 × R² 绝对值` 打分排序 | `rank_candidates` + `scoring.rank_pool` |
-| 4 | **日线风控**：连板 / 涨幅 / 乖离 / 波动 / 量能 / 次新 / 跳空。少数高精度规则硬否决，其余扣分累计到上限才否决 | `select_target` + `risk.evaluate_candidate` |
-| 4b | **分钟线风控**：前几日炸板 / 尾盘跳水 / 收在日内低位 / 跌破 VWAP / 高位派发 / 触及跌停 / 天量滞涨；第 1 名被否决就顺延看第 2 名 | `check_intraday` + `intraday.evaluate_sessions` |
-| 5 | 计算目标股由远及近的 6 个历史动量分数 | `rank_stock_change` + `scoring.momentum_score_history` |
-| 6 | 目标股停牌 / 跌停则放弃 | `filter_target` |
-| 7 | 分数连续下降 ≥ 2 天 → `SELL`，否则 `BUY`；大盘走弱时 `BUY` 降级为 `KEEP` | `get_timing_signal` + `signals.timing_signal` |
-| 8 | `SELL` 清仓；持仓已是目标股则持有；否则先卖旧、再用可用资金整手买入 | `adjust_position` |
-| 9 | 持仓风控：-15% 硬止损 + 从最高价回撤 10% 移动止损（**每根 K 线都执行**） | `check_lose_backtest` + `signals.exit_reason` |
-| 10 | 打印当日成交、持仓、资金 | `print_trade_info_backtest` |
+| 1 | 取板块成分股，过滤停牌 / ST / 市值不在 30~500 亿 / 跌停 | `get_stock_pool` + `universe.passes_filters` |
+| 2 | 对每只股票的对数收盘价做线性回归，按 `年化收益率 × R² 绝对值` 打分，取第 1 名 | `select_target` + `scoring.rank_pool` |
+| 3 | 计算目标股由远及近的 6 个历史动量分数 | `rank_stock_change` + `scoring.momentum_score_history` |
+| 4 | 目标股停牌 / 跌停则放弃 | `filter_target` |
+| 5 | 分数连续下降 ≥ 2 天 → `SELL`，否则 `BUY`；RSRS 只打印 | `get_timing_signal` + `signals.timing_signal` |
+| 6 | `SELL` 清仓；持仓已是目标股则持有；否则先卖旧、再用可用资金整手买入 | `adjust_position` |
+| 7 | 持仓风控：-15% 硬止损（**每根 K 线都执行**） | `check_lose_backtest` + `signals.exit_reason` |
+| 8 | 打印当日成交、持仓、资金 | `print_trade_info_backtest` |
+
+`STRATEGY_MODE = 'risk'` 时，步骤 2 之后会插入日线风控与分钟线风控
+（沿排名顺延取第一只通过体检的），并启用大盘均线择时和移动止损。
 
 **避免未来函数**：所有打分窗口都排除当前这根 K 线
 （`closes[-(lookback+1):-1]`），当前 bar 只用于取开盘价下单和收盘价判断止损。
@@ -100,6 +104,8 @@ python -m pytest            # 183 passed
 
 | 参数 | 默认值 | 含义 |
 | --- | --- | --- |
+| `STRATEGY_MODE` | `'original'` | `'original'` = 最开始的选股逻辑，无风控；`'risk'` = 叠加全部风控 |
+| `BUY_ON_KEEP` | `True` | KEEP 信号是否照常买入（原脚本行为） |
 | `CONCEPT_SECTORS` | `['沪深a股']` | 股票池板块；改成 `CONCEPT_SECTORS_FULL` 即切回 62 个热门概念 |
 | `MIN_MARKET_CAP` / `MAX_MARKET_CAP` | 30 亿 / 500 亿 | 总市值区间 |
 | `EXCLUDED_CODE_PREFIXES` | `()` | 想屏蔽创业板/科创板时填 `('300', '301', '688')` |
@@ -112,7 +118,7 @@ python -m pytest            # 183 passed
 | `RSRS_INDEX` | `000300.SH` | 大盘择时基准 |
 | `RSRS_ENABLED` | `False` | 保持原逻辑：RSRS 只打印不介入；置 `True` 后低于 `RSRS_BUY_THRESHOLD` 不买入 |
 | `LIMIT_RATIO_BY_PREFIX` | 300/301/688 → 20% | 涨跌停幅度，其余 10% |
-| `RISK_ENABLED` | `True` | 风控总开关；单条阈值设为 `None` 即关闭该项 |
+| `RISK_ENABLED` | 由 `STRATEGY_MODE` 决定 | 风控总开关；单条阈值设为 `None` 即关闭该项 |
 | `RISK_PRESET` | `'normal'` | 三档预设：`loose` / `normal` / `strict`，一行切换整套阈值 |
 | `RISK_PENALTY_LIMIT` | 4 | 软规则扣分累计达到该值才否决（`=1` 即"命中一条就否决"） |
 | `RISK_MAX_CANDIDATES` | 30 | 第 1 名被否决后，沿排名往下最多再试几只 |
@@ -122,14 +128,14 @@ python -m pytest            # 183 passed
 | `RISK_MAX_GAP_UP` / `DOWN` | 7% / 7% | 当日高开、低开超过该幅度不买 |
 | `RISK_FALLBACK_TO_BEST` | `False` | 全被否决时是否兜底买扣分最低的那只 |
 | `RISK_DEBUG` | `False` | 打印每只候选的风控指标明细，用于按真实数据校准阈值 |
-| `INTRADAY_ENABLED` | `True` | 分钟线风控总开关，回看 `INTRADAY_DAYS`(=3) 个完整交易日 |
+| `INTRADAY_ENABLED` | 由 `STRATEGY_MODE` 决定 | 分钟线风控总开关，回看 `INTRADAY_DAYS`(=3) 个完整交易日 |
 | `INTRADAY_MAX_FAILED_LIMIT_UP` | 0 | 近 3 日炸板（摸涨停没封住）次数上限 |
 | `INTRADAY_MIN_TAIL_RETURN` | -4% | 最近一日尾盘 30 分钟跌幅下限 |
 | `INTRADAY_MAX_DOWN_AMOUNT_RATIO` | 0.70 | 下跌分钟成交额占比上限 |
 | `INTRADAY_MAX_POST_HIGH_AMOUNT_RATIO` | 0.75 | 日内最高点之后的成交额占比上限 |
 | `INTRADAY_REQUIRE_DATA` | `False` | 分钟数据缺失时是否直接否决（QMT 默认没下载分钟数据） |
-| `MARKET_FILTER_ENABLED` | `True` | 沪深 300 跌破 MA20 时 `no_new`（或 `exit_all`） |
-| `TRAILING_STOP_RATIO` | 10% | 从持仓期间最高价回撤该比例即离场 |
+| `MARKET_FILTER_ENABLED` | 由 `STRATEGY_MODE` 决定 | 沪深 300 跌破 MA20 时 `no_new`（或 `exit_all`） |
+| `TRAILING_STOP_RATIO` | `None`（`risk` 档为 10%） | 从持仓期间最高价回撤该比例即离场 |
 
 风控的完整规则表、默认阈值和调参建议见 [`docs/risk.md`](docs/risk.md)。
 | `LOT_SIZE` | 100 | 一手股数 |
@@ -148,5 +154,5 @@ python -m pytest            # 183 passed
    改为按代码前缀取 20%/10%。
 5. 股票池为空或候选被过滤时原逻辑直接 `return`，当天持仓就没人做止损了 ——
    现在持仓风控每根 K 线都执行。
-4. `KEEP` 信号（分数序列取不到，或开启 RSRS 后被大盘否决）不再新开仓，
-   原脚本此时会照常买入。
+4. `KEEP` 信号的处理由 `BUY_ON_KEEP` 控制，默认 `True`（与原脚本一致，照常买入）；
+   设为 `False` 则不新开仓。

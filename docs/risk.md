@@ -1,5 +1,10 @@
 # 风控模块：为什么会买到跌停票，以及怎么过滤
 
+> **当前默认是关闭的。** `config.STRATEGY_MODE = 'original'` 时，
+> 下面所有规则都不生效，策略按最开始的逻辑跑（买动量第 1 名 + -15% 硬止损）。
+> 改成 `STRATEGY_MODE = 'risk'` 即可整套启用；也可以单独打开某一层
+> （`RISK_ENABLED` / `INTRADAY_ENABLED` / `MARKET_FILTER_ENABLED` / `TRAILING_STOP_RATIO`）。
+
 ## 1. 根因：打分公式天生偏爱"要崩的票"
 
 动量分数 = `(exp(slope × 244) - 1) × |R²|`，而 `LOOKBACK_DAYS = 5`。

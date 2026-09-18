@@ -29,6 +29,17 @@
 """
 
 # ============================================================
+# 运行模式（最重要的一个开关，放在最前面）
+# ============================================================
+# 'original' —— 最开始的选股逻辑：动量第 1 名直接买，不做任何风控过滤，
+#               只保留 -15% 硬止损。风控相关的开关会在文件末尾被统一关掉。
+# 'risk'     —— 在原逻辑之上叠加日线风控 / 分钟线风控 / 大盘择时 / 移动止损。
+#
+# 想把风控加回来：改成 'risk' 即可，代码都还在，阈值见下面各段。
+STRATEGY_MODE = 'original'
+
+
+# ============================================================
 # 策略与账号
 # ============================================================
 STRATEGY_NAME = '动量择时策略'
@@ -95,6 +106,9 @@ RSRS_BUY_THRESHOLD = 0.7    # RSRS_ENABLED=True 时，修正标准分低于该�
 # ============================================================
 DECLINE_DAYS_TO_SELL = 2   # 动量分数连续下降达到该天数则卖出
 STOP_LOSS_RATIO = -0.15    # 硬止损线 -15%
+# KEEP 信号（分数序列取不到，或开启大盘风控后被否决）时是否照常买入。
+# True = 原脚本行为；False = 不新开仓
+BUY_ON_KEEP = True
 
 
 # ============================================================
@@ -308,6 +322,19 @@ elif RISK_PRESET == 'strict':
     INTRADAY_MAX_TAIL_AMOUNT_RATIO = 0.35
     INTRADAY_MAX_POST_HIGH_AMOUNT_RATIO = 0.65
     INTRADAY_MAX_AMOUNT_SPIKE = 3.0
+
+
+# ============================================================
+# 运行模式覆盖（放在最后，优先级高于上面所有设置）
+# ============================================================
+if STRATEGY_MODE == 'original':
+    # 回到最开始的选股逻辑：买动量第 1 名，不做任何过滤
+    RISK_ENABLED = False                    # 关掉日线风控（连板/涨幅/乖离/跳空…）
+    INTRADAY_ENABLED = False                # 关掉分钟线风控（炸板/尾盘跳水/成交额…）
+    MARKET_FILTER_ENABLED = False           # 关掉大盘均线择时
+    TRAILING_STOP_RATIO = None              # 关掉移动止损，只留 -15% 硬止损
+    ASSUME_LIMIT_DOWN_UNSELLABLE = False    # 一字跌停也照常发卖单（与原脚本一致）
+    BUY_ON_KEEP = True                      # KEEP 信号照常买入（与原脚本一致）
 
 # ==========================================================
 # momentum_timing/indicators.py
@@ -1817,6 +1844,8 @@ def init(C):
     g.reject_stats = {}       # {否决原因: 次数}，回测结束时汇总
 
     print('[动量择时策略-回测版] 初始化完成')
+    print('  运行模式: %s' % ('original 最初的选股逻辑（无风控过滤）'
+                              if STRATEGY_MODE == 'original' else STRATEGY_MODE))
     print('  回测账号: %s, 类型: %s' % (g.account, g.acct_type))
     print('  板块数: %d' % len(CONCEPT_SECTORS))
     print('  动量回看: %d天, 连降卖出: %d天, 止损线: %.0f%%'
@@ -2494,7 +2523,7 @@ def adjust_position(stock, signal, C, bar_date):
         print('[调仓] KEEP: 继续持有 %s' % stock)
         return
 
-    if signal == SIGNAL_KEEP:
+    if signal == SIGNAL_KEEP and not BUY_ON_KEEP:
         print('[调仓] KEEP: 不新开仓')
         return
 

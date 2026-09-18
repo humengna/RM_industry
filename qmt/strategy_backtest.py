@@ -52,8 +52,9 @@ def _bootstrap_sys_path():
 _bootstrap_sys_path()
 
 from momentum_timing.config import (
-    ACCOUNT_TYPE, BACKTEST_ACCOUNT, ASSUME_LIMIT_DOWN_UNSELLABLE, CONCEPT_SECTORS,
-    DECLINE_DAYS_TO_SELL, INTRADAY_BARS_PER_DAY, INTRADAY_DAYS, INTRADAY_ENABLED,
+    ACCOUNT_TYPE, BACKTEST_ACCOUNT, ASSUME_LIMIT_DOWN_UNSELLABLE, BUY_ON_KEEP,
+    CONCEPT_SECTORS, DECLINE_DAYS_TO_SELL, INTRADAY_BARS_PER_DAY, INTRADAY_DAYS,
+    INTRADAY_ENABLED, STRATEGY_MODE,
     INTRADAY_REQUIRE_DATA, LOOKBACK_DAYS, MARKET_FILTER_ACTION, MARKET_FILTER_ENABLED,
     MARKET_INDEX, MARKET_MA_WINDOW, MAX_MARKET_CAP, MIN_MARKET_CAP, RISK_ENABLED,
     RISK_DEBUG, RISK_FALLBACK_TO_BEST, RISK_MAX_CANDIDATES, RISK_PENALTY_LIMIT,
@@ -124,6 +125,8 @@ def init(C):
     g.reject_stats = {}       # {否决原因: 次数}，回测结束时汇总
 
     print('[动量择时策略-回测版] 初始化完成')
+    print('  运行模式: %s' % ('original 最初的选股逻辑（无风控过滤）'
+                              if STRATEGY_MODE == 'original' else STRATEGY_MODE))
     print('  回测账号: %s, 类型: %s' % (g.account, g.acct_type))
     print('  板块数: %d' % len(CONCEPT_SECTORS))
     print('  动量回看: %d天, 连降卖出: %d天, 止损线: %.0f%%'
@@ -801,7 +804,7 @@ def adjust_position(stock, signal, C, bar_date):
         print('[调仓] KEEP: 继续持有 %s' % stock)
         return
 
-    if signal == SIGNAL_KEEP:
+    if signal == SIGNAL_KEEP and not BUY_ON_KEEP:
         print('[调仓] KEEP: 不新开仓')
         return
 

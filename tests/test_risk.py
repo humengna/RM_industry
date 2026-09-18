@@ -442,3 +442,34 @@ def test_presets_move_thresholds_in_the_right_direction():
     for preset in loaded:
         assert loaded[preset]['RISK_MAX_CONSECUTIVE_LIMIT_UP'] == 0
         assert 'limit_up_streak' in loaded[preset]['RISK_HARD_RULES']
+
+
+def test_strategy_mode_switches_all_risk_layers():
+    """STRATEGY_MODE 一行切换：original 全关，risk 全开。"""
+    import io
+    import os
+
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        'momentum_timing', 'config.py')
+    source = io.open(path, encoding='utf-8').read()
+
+    loaded = {}
+    for mode in ('original', 'risk'):
+        namespace = {}
+        exec(compile(source.replace("STRATEGY_MODE = 'original'", "STRATEGY_MODE = '%s'" % mode),
+                     'config', 'exec'), namespace)
+        loaded[mode] = namespace
+
+    original, risk = loaded['original'], loaded['risk']
+
+    assert original['RISK_ENABLED'] is False
+    assert original['INTRADAY_ENABLED'] is False
+    assert original['MARKET_FILTER_ENABLED'] is False
+    assert original['TRAILING_STOP_RATIO'] is None
+    assert original['ASSUME_LIMIT_DOWN_UNSELLABLE'] is False
+    assert original['BUY_ON_KEEP'] is True
+
+    assert risk['RISK_ENABLED'] is True
+    assert risk['INTRADAY_ENABLED'] is True
+    assert risk['MARKET_FILTER_ENABLED'] is True
+    assert risk['TRAILING_STOP_RATIO']

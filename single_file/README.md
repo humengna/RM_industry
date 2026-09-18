@@ -18,10 +18,11 @@
 3. 把 `BACKTEST_ACCOUNT = 'testS'` 改成你 QMT 里实际存在的模拟账号，
    并在回测设置里选**同一个**账号——两处不一致的话 `get_trade_detail_data`
    取不到持仓，策略会一直空转；
-4. 回测周期选 **日线**（`handlebar` 按日 K 驱动，选分钟周期逻辑会乱），
+4. 默认按最开始的选股逻辑运行（`STRATEGY_MODE = 'original'`，无风控过滤）；
+   想启用风控把它改成 `'risk'`；
+5. 回测周期选 **日线**（`handlebar` 按日 K 驱动，选分钟周期逻辑会乱），
    主图品种挑一个有连续日线的即可，例如 `000300.SH`；
-5. 首次运行先把 `INTRADAY_ENABLED` 设为 `False` 跑通流程，
-   补好 1 分钟历史数据后再打开分钟线风控。
+6. 只有切到 `'risk'` 模式才需要 1 分钟历史数据；`'original'` 模式不读分钟线。
 
 ## 报编码错误怎么办
 
@@ -35,12 +36,16 @@
 直接在单文件里改即可。常用开关：
 
 ```python
-RISK_ENABLED = True            # 日线风控总开关
-INTRADAY_ENABLED = True        # 分钟线风控总开关（需要本地有 1 分钟数据）
-MARKET_FILTER_ENABLED = True   # 大盘 MA20 风控
+STRATEGY_MODE = 'original'     # 'original' = 最开始的选股逻辑（当前默认，无风控）
+                               # 'risk'     = 叠加日线/分钟线/大盘风控 + 移动止损
 CONCEPT_SECTORS = ['沪深a股']   # 换成 ['半导体'] 之类可以大幅加快回测
 LOOKBACK_DAYS = 5              # 动量回看天数
+STOP_LOSS_RATIO = -0.15        # 硬止损线
+DECLINE_DAYS_TO_SELL = 2       # 动量分数连续下降几天卖出
 ```
+
+`STRATEGY_MODE` 在文件**最后**一段生效（`if STRATEGY_MODE == 'original':` 会统一
+覆盖前面的风控开关），所以改这一行就够了，不用逐个去改 `RISK_ENABLED`。
 
 ## 重新生成
 
