@@ -11,6 +11,12 @@ A 股单标的轮动策略：**概念/全市场股票池 → 对数线性回归�
 [`reference/original_qmt_backtest.py`](reference/original_qmt_backtest.py)），
 本项目把它拆成"可测试的纯计算内核"和"QMT 接口层"两部分。
 
+> 本仓库目前有两套策略：
+> * **动量择时策略**（本文档，QMT 内置 Python 回测版）
+> * **沪深300 五均线四级发散策略**（`hs300_ma_divergence/`，xtdata 本地回测版，
+>   带历史成分股 point-in-time 处理，见
+>   [`hs300_ma_divergence/README.md`](hs300_ma_divergence/README.md)）
+
 ## 目录结构
 
 ```
@@ -27,7 +33,7 @@ qmt/
 └── strategy_backtest.py  QMT 回测脚本：init / handlebar / stop + 取数 + 下单
 tools/
 └── bundle_qmt.py         打包成单文件，方便直接贴进 QMT 客户端
-tests/                    191 个单元测试 + 模拟 QMT 环境的端到端测试
+tests/                    269 个单元测试 + 模拟 QMT 环境的端到端测试
 reference/                原始脚本存档
 ```
 
@@ -60,7 +66,7 @@ PROJECT_ROOT = r'D:\quant\RM_industry'
 
 ```bash
 pip install -r requirements-dev.txt
-python -m pytest            # 191 passed
+python -m pytest            # 269 passed
 ```
 
 测试不需要 QMT：`tests/fake_qmt.py` 模拟了 `ContextInfo`、`passorder`、

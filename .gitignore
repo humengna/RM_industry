@@ -10,3 +10,7 @@ venv/
 
 # tools/bundle_qmt.py 生成的单文件产物
 dist/
+
+# 回测输出与本地数据
+backtests/
+data/
