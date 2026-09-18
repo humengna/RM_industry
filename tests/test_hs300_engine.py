@@ -69,12 +69,31 @@ def test_limit_prices_rounding():
     assert limit_prices('600000.SH', 0) == (0.0, 0.0)
 
 
-def test_costs():
-    # 佣金万2.5、最低5元；卖出多千1印花税
-    assert buy_cost(100000) == pytest.approx(100000 * 0.00025 + 100000 * 0.00001)
-    assert buy_cost(1000) == pytest.approx(5.0 + 1000 * 0.00001)
-    assert sell_cost(100000) == pytest.approx(
-        100000 * 0.00025 + 100000 * 0.00001 + 100000 * 0.001)
+def test_costs_follow_config():
+    """费用 = 佣金（有下限）+ 过户费，卖出再加印花税。费率以 config 为准。"""
+    from hs300_ma_divergence import config
+
+    amount = 100000.0
+    commission = max(amount * config.COMMISSION_RATE, config.MIN_COMMISSION)
+    transfer = amount * config.TRANSFER_FEE_RATE
+    stamp = amount * config.STAMP_TAX_RATE
+
+    assert buy_cost(amount) == pytest.approx(commission + transfer)
+    assert sell_cost(amount) == pytest.approx(commission + transfer + stamp)
+    # 小额成交走单笔最低佣金
+    assert buy_cost(1000) == pytest.approx(config.MIN_COMMISSION + 1000 * config.TRANSFER_FEE_RATE)
+
+
+def test_current_fee_rates():
+    """锁定当前费率设置：佣金万 1、印花税千 0.5、过户费万 0.1、最低佣金 5 元。"""
+    from hs300_ma_divergence import config
+
+    assert config.COMMISSION_RATE == 0.0001
+    assert config.STAMP_TAX_RATE == 0.0005
+    assert config.TRANSFER_FEE_RATE == 0.00001
+    assert config.MIN_COMMISSION == 5.0
+    # 10 万元一轮来回约 72 元
+    assert buy_cost(100000) + sell_cost(100000) == pytest.approx(72.0)
 
 
 def test_target_volume_matches_original_formula():
