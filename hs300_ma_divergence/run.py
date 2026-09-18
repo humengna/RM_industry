@@ -42,7 +42,7 @@ def run_backtest(start=config.START_DATE, end=config.END_DATE, cash=config.INIT_
                  dividend_type=config.DIVIDEND_TYPE, verbose=config.PRINT_DAILY,
                  print_all_candidates=config.PRINT_ALL_CANDIDATES,
                  respect_limits=config.RESPECT_PRICE_LIMITS, slippage=config.SLIPPAGE,
-                 write_files=True):
+                 max_weight=config.MAX_POSITION_WEIGHT, write_files=True):
     """跑一次完整回测，返回 (result, summary, files)。"""
     market = MarketData(xt=xt, dividend_type=dividend_type)
     data_start = shift_date(start, WARMUP_CALENDAR_DAYS)
@@ -82,13 +82,15 @@ def run_backtest(start=config.START_DATE, end=config.END_DATE, cash=config.INIT_
     backtest = Backtest(bars, days, provider, init_cash=cash, max_holdings=max_holdings,
                         ascending=ascending, verbose=verbose,
                         print_all_candidates=print_all_candidates,
-                        respect_limits=respect_limits, slippage=slippage)
+                        respect_limits=respect_limits, slippage=slippage,
+                        max_weight=max_weight)
     result = backtest.run()
     summary = summarize(result)
 
     params = {
         'start': start, 'end': end, 'init_cash': cash, 'max_holdings': max_holdings,
-        'sort_ascending': ascending, 'dividend_type': dividend_type,
+        'max_position_weight': max_weight, 'sort_ascending': ascending,
+        'dividend_type': dividend_type,
         'ma_periods': config.MA_PERIODS, 'constituent_source': source,
         'constituent_granularity': granularity, 'respect_price_limits': respect_limits,
         'slippage': slippage, 'commission_rate': config.COMMISSION_RATE,
@@ -135,7 +137,9 @@ def build_parser():
     parser.add_argument('--end', default=config.END_DATE, help='回测结束日 YYYYMMDD')
     parser.add_argument('--cash', type=float, default=config.INIT_CASH, help='初始资金')
     parser.add_argument('--max-holdings', type=int, default=config.MAX_HOLDINGS,
-                        help='最大持仓数')
+                        help='最大持仓数，默认 %d' % config.MAX_HOLDINGS)
+    parser.add_argument('--max-weight', type=float, default=config.MAX_POSITION_WEIGHT,
+                        help='单只票的仓位上限，默认 %.2f' % config.MAX_POSITION_WEIGHT)
     parser.add_argument('--download', action='store_true',
                         help='先补下载行情（首次运行必须加）')
     parser.add_argument('--out', default=config.OUTPUT_DIR, help='结果输出目录')
@@ -177,5 +181,6 @@ def main(argv=None):
         dividend_type=args.dividend, verbose=not args.quiet,
         print_all_candidates=args.all_candidates,
         respect_limits=not args.no_limits, slippage=args.slippage,
+        max_weight=args.max_weight,
     )
     return 0

@@ -27,8 +27,12 @@ ALLOW_CURRENT_CONSTITUENTS_FALLBACK = False
 MA_PERIODS = (5, 10, 20, 30, 60)
 HISTORY_COUNT = max(MA_PERIODS) + 1     # 至少需要的历史长度
 
-MAX_HOLDINGS = 5                        # 最大持仓数
-TARGET_WEIGHT = 1.0 / MAX_HOLDINGS      # 单股目标仓位
+MAX_HOLDINGS = 2                        # 最大持仓数
+TARGET_WEIGHT = 1.0 / MAX_HOLDINGS      # 单股目标仓位 = 1 / 持仓数
+# 单只票的仓位上限（按下单时的总资产算）。持仓数少时这条才真正起作用：
+# MAX_HOLDINGS=2 -> TARGET_WEIGHT=50%，与上限一致；
+# 若把 MAX_HOLDINGS 调成 1，仓位仍被这条限制在 50%，另一半留现金。
+MAX_POSITION_WEIGHT = 0.50
 
 # 候选排序方向。
 # 原脚本里 results.sort(key=..., #reverse=True) 的 reverse 被注释掉了，

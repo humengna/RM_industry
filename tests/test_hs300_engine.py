@@ -242,3 +242,53 @@ def test_slippage_moves_price_against_you():
 
     open_price = bars['600000.SH'].field_on(DAYS[1], 'open')
     assert backtest.trades[0]['price'] == pytest.approx(open_price * 1.01)
+
+
+# ---------- 单只仓位上限 ----------
+
+def test_position_weight_cap_limits_single_buy():
+    """单只票不超过总资产的 50%（下单金额口径）。"""
+    from hs300_ma_divergence.engine import MAX_POSITION_WEIGHT
+
+    # 目标仓位 100%，但上限 50% -> 只买 50% × 0.98
+    volume = target_volume(1000000, 1000000, 10.0, 1, weight=1.0,
+                           max_weight=MAX_POSITION_WEIGHT)
+    assert volume == 49000
+    assert volume * 10.0 == pytest.approx(1000000 * 0.5 * 0.98)
+
+
+def test_position_weight_cap_can_be_relaxed():
+    assert target_volume(1000000, 1000000, 10.0, 1, weight=1.0, max_weight=None) == 98000
+    assert target_volume(1000000, 1000000, 10.0, 1, weight=1.0, max_weight=0.3) == 29400
+
+
+def test_available_cash_still_binds_when_below_cap():
+    """可用资金不够时，按 可用资金÷待买只数 来，不会硬顶到上限。"""
+    assert target_volume(100000, 1000000, 10.0, 2, weight=0.5, max_weight=0.5) == 4900
+
+
+def test_two_holdings_split_the_account():
+    """默认 2 只持仓：每只约 50%，两只买完基本满仓。"""
+    bars = {
+        '600000.SH': bars_from('600000.SH', DAYS, [10.0] * 5),
+        '600001.SH': bars_from('600001.SH', DAYS, [10.0] * 5),
+    }
+    backtest = build({DAYS[0]: ['600000.SH', '600001.SH']}, bars,
+                     cash=1000000.0, max_holdings=2)
+    backtest.run()
+
+    buys = [t for t in backtest.trades if t['side'] == 'BUY']
+    assert len(buys) == 2
+    for trade in buys:
+        assert trade['amount'] <= 1000000 * 0.5, '单只不得超过总资产的 50%'
+    assert len(backtest.portfolio.positions) == 2
+    # 两只加起来接近满仓，剩余现金不多
+    assert backtest.portfolio.cash < 1000000 * 0.1
+
+
+def test_config_defaults_are_two_holdings_at_half_weight():
+    from hs300_ma_divergence import config
+
+    assert config.MAX_HOLDINGS == 2
+    assert config.TARGET_WEIGHT == pytest.approx(0.5)
+    assert config.MAX_POSITION_WEIGHT == 0.50

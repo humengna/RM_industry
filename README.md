@@ -34,7 +34,7 @@ qmt/
 tools/
 ├── bundle_qmt.py         打包成单文件，方便直接贴进 QMT 客户端
 └── import_constituents_xlsx.py  Excel 历史成分股 -> 回测缓存 CSV
-tests/                    294 个单元测试 + 模拟 QMT 环境的端到端测试
+tests/                    299 个单元测试 + 模拟 QMT 环境的端到端测试
 reference/                原始脚本存档
 ```
 
@@ -67,7 +67,7 @@ PROJECT_ROOT = r'D:\quant\RM_industry'
 
 ```bash
 pip install -r requirements-dev.txt
-python -m pytest            # 294 passed
+python -m pytest            # 299 passed
 ```
 
 测试不需要 QMT：`tests/fake_qmt.py` 模拟了 `ContextInfo`、`passorder`、
