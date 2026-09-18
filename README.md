@@ -36,7 +36,7 @@ tools/
 └── import_constituents_xlsx.py  Excel 历史成分股 -> 回测缓存 CSV
 single_file/              生成好的单文件（UTF-8 / GBK 两版），复制即用
 data/hs300_constituents.csv  沪深300 历史成分股（point-in-time，回测输入）
-tests/                    291 个单元测试 + 模拟 QMT / xtdata 环境的端到端测试
+tests/                    295 个单元测试 + 模拟 QMT / xtdata 环境的端到端测试
 reference/                原始脚本存档
 ```
 
@@ -79,7 +79,7 @@ PROJECT_ROOT = r'D:\quant\RM_industry'
 
 ```bash
 pip install -r requirements-dev.txt
-python -m pytest            # 290 passed
+python -m pytest            # 295 passed
 ```
 
 测试不需要 QMT：`tests/fake_qmt.py` 模拟了 `ContextInfo`、`passorder`、

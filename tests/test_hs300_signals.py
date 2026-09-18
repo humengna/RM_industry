@@ -126,3 +126,46 @@ def test_select_filters_then_ranks():
 
 def test_bars_needed():
     assert signals.bars_needed() == 61
+
+
+# ---------- 锁定"取发散度最小的 N 只" ----------
+
+def test_select_picks_the_smallest_scores_end_to_end():
+    """
+    默认配置下必须选出总发散度最小的 N 只（原脚本 reverse=True 被注释掉的行为）。
+
+    构造 8 只加速度递增的票：加速度越大、发散度越大，
+    选中的 5 只应当正好是分数最小的 5 只。
+    """
+    close_map = {}
+    for i in range(8):
+        close_map['60000%d.SH' % i] = accelerating(accel=0.00002 + 0.00002 * i)
+
+    target, candidates = signals.select(close_map, top_n=5)
+
+    assert len(candidates) == 8, '这 8 只都应满足入选条件'
+    all_scores = sorted(item['score'] for item in candidates)
+    picked_scores = sorted(item['score'] for item in target)
+
+    assert picked_scores == all_scores[:5]
+    assert [item['stock'] for item in target] == ['600000.SH', '600001.SH',
+                                                  '600002.SH', '600003.SH', '600004.SH']
+
+
+def test_select_descending_picks_the_largest_scores():
+    close_map = {}
+    for i in range(8):
+        close_map['60000%d.SH' % i] = accelerating(accel=0.00002 + 0.00002 * i)
+
+    target, candidates = signals.select(close_map, top_n=5, ascending=False)
+
+    all_scores = sorted((item['score'] for item in candidates), reverse=True)
+    assert sorted((item['score'] for item in target), reverse=True) == all_scores[:5]
+    assert [item['stock'] for item in target] == ['600007.SH', '600006.SH',
+                                                  '600005.SH', '600004.SH', '600003.SH']
+
+
+def test_default_config_is_ascending():
+    from hs300_ma_divergence import config
+
+    assert config.SORT_ASCENDING is True
