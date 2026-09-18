@@ -251,7 +251,7 @@ def test_close_at_low_and_below_vwap_reject():
     sessions = healthy_sessions()
     pre = sessions[-2]['close'][-1]
     # 高开冲高后一路阴跌，收在全天最低
-    sessions[-1] = make_session('20240110', ramp(pre * 1.05, pre * 1.0))
+    sessions[-1] = make_session('20240110', ramp(pre * 1.08, pre * 1.0))
     attach_pre_close(sessions)
 
     reasons, _ = evaluate_sessions('600000.SH', sessions)
@@ -262,12 +262,12 @@ def test_close_at_low_and_below_vwap_reject():
 def test_intraday_crash_rejects():
     sessions = healthy_sessions()
     pre = sessions[-2]['close'][-1]
-    sessions[-1] = make_session('20240110', ramp(pre * 1.04, pre * 0.94))
+    sessions[-1] = make_session('20240110', ramp(pre * 1.06, pre * 0.92))
     attach_pre_close(sessions)
 
     reasons, metrics = evaluate_sessions('600000.SH', sessions)
     assert 'intraday_crash' in reasons
-    assert metrics['drawdown'] < -0.07
+    assert metrics['drawdown'] < -0.10
 
 
 def test_selling_pressure_rejects():

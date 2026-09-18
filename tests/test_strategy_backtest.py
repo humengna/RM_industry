@@ -681,3 +681,84 @@ def test_minute_data_not_fetched_for_daily_rejected_candidate():
 
     assert '600004.SH' not in minute_stocks
     assert '600001.SH' in minute_stocks
+
+
+# ---------- 风控松紧：扣分制与兜底 ----------
+
+def test_mildly_overheated_candidate_still_passes():
+    """只是涨得多、偏离均线，扣分没到上限，仍然可以买。"""
+    module = load_strategy()
+    # 近 5 日 +30%（超过原来 25% 的口径，但在现在的 40% 之内）
+    closes = [10.0] * (N_BARS - 5) + [10.8, 11.6, 12.4, 13.0, 13.0]
+    context = build_context(prices={'600006.SH': make_prices(closes)},
+                            sector=['600006.SH'])
+    broker = FakeBroker(available=100000.0)
+    run_bar(module, context, broker)
+
+    assert module.g.today_target == '600006.SH'
+
+
+def test_all_rejected_prints_reason_distribution(capsys):
+    module = load_strategy()
+    hot = make_prices(limit_up_prices(N_BARS - 3, 2))
+    context = build_context(prices={'600004.SH': hot}, sector=['600004.SH'])
+    broker = FakeBroker(available=100000.0)
+    run_bar(module, context, broker)
+
+    out = capsys.readouterr().out
+    assert '全部否决，原因分布' in out
+    assert 'limit_up_streak' in out
+
+
+def test_fallback_buys_lowest_penalty_candidate():
+    module = load_strategy()
+    module.RISK_FALLBACK_TO_BEST = True
+    gapped = make_prices([round(10 * (1.015 ** i), 2) for i in range(N_BARS)])
+    gapped['open'][-1] = round(gapped['preClose'][-1] * 1.08, 2)   # 高开 8%，软否决
+    context = build_context(prices={'600001.SH': gapped}, sector=['600001.SH'])
+    broker = FakeBroker(available=100000.0)
+    run_bar(module, context, broker)
+
+    assert module.g.today_target == '600001.SH'
+    assert [o for o in broker.orders if o['op_type'] == module.OP_BUY]
+
+
+def test_fallback_never_buys_hard_rejected_candidate():
+    """兜底也不碰连板票——硬否决就是硬否决。"""
+    module = load_strategy()
+    module.RISK_FALLBACK_TO_BEST = True
+    hot = make_prices(limit_up_prices(N_BARS - 3, 2))
+    context = build_context(prices={'600004.SH': hot}, sector=['600004.SH'])
+    broker = FakeBroker(available=100000.0)
+    run_bar(module, context, broker)
+
+    assert broker.orders == []
+
+
+def test_candidate_scan_goes_deeper_than_five():
+    """排名前几名全是连板票时，要能一直往下找到能买的那只。"""
+    module = load_strategy()
+    prices = {}
+    sector = []
+    for i in range(8):                       # 8 只连板票排在前面
+        code = '60010%d.SH' % i
+        prices[code] = make_prices(limit_up_prices(N_BARS - 3, 2, start=10.0 + i))
+        sector.append(code)
+    sector.append('600001.SH')               # 温和上涨的那只排在后面
+
+    context = build_context(prices=prices, sector=sector + ['600001.SH'])
+    broker = FakeBroker(available=100000.0)
+    run_bar(module, context, broker)
+
+    assert module.g.today_target == '600001.SH'
+    assert module.g.reject_stats['limit_up_streak'] >= 8
+
+
+def test_debug_prints_metric_detail(capsys):
+    module = load_strategy()
+    module.RISK_DEBUG = True
+    context = build_context()
+    broker = FakeBroker(available=100000.0)
+    run_bar(module, context, broker)
+
+    assert '[风控明细]' in capsys.readouterr().out

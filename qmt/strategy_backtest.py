@@ -56,7 +56,8 @@ from momentum_timing.config import (
     DECLINE_DAYS_TO_SELL, INTRADAY_BARS_PER_DAY, INTRADAY_DAYS, INTRADAY_ENABLED,
     INTRADAY_REQUIRE_DATA, LOOKBACK_DAYS, MARKET_FILTER_ACTION, MARKET_FILTER_ENABLED,
     MARKET_INDEX, MARKET_MA_WINDOW, MAX_MARKET_CAP, MIN_MARKET_CAP, RISK_ENABLED,
-    RISK_MAX_CANDIDATES, RSRS_ENABLED, RSRS_INDEX, RSRS_M, RSRS_N, SCORE_HISTORY_DAYS,
+    RISK_DEBUG, RISK_FALLBACK_TO_BEST, RISK_MAX_CANDIDATES, RISK_PENALTY_LIMIT,
+    RISK_PRESET, RSRS_ENABLED, RSRS_INDEX, RSRS_M, RSRS_N, SCORE_HISTORY_DAYS,
     STOP_LOSS_RATIO, STRATEGY_NAME, TRADING_DAYS_PER_YEAR, TRAILING_STOP_RATIO,
     WARMUP_BARS,
 )
@@ -67,8 +68,8 @@ from momentum_timing.intraday import (
 from momentum_timing.indicators import rsrs_corrected_zscore
 from momentum_timing.portfolio import buy_volume, can_buy, can_sell
 from momentum_timing.risk import (
-    RiskParams, RiskResult, evaluate_candidate, history_bars_needed,
-    market_is_healthy, pick_first_passing,
+    RiskParams, RiskResult, best_of_rejected, evaluate_candidate, history_bars_needed,
+    market_is_healthy, pick_first_passing, reason_counts,
 )
 from momentum_timing.scoring import (
     bars_needed_for_history, bars_needed_for_rank, momentum_score_history, rank_pool,
@@ -127,8 +128,9 @@ def init(C):
     print('  板块数: %d' % len(CONCEPT_SECTORS))
     print('  动量回看: %d天, 连降卖出: %d天, 止损线: %.0f%%'
           % (LOOKBACK_DAYS, DECLINE_DAYS_TO_SELL, STOP_LOSS_RATIO * 100))
-    print('  风控: %s (候选顺延 %d 只, 需要 %d 根历史K线)'
-          % ('开' if RISK_ENABLED else '关', RISK_MAX_CANDIDATES, g.risk_bars))
+    print('  风控: %s 档位=%s 候选顺延 %d 只, 扣分上限 %d, 需要 %d 根历史K线'
+          % ('开' if RISK_ENABLED else '关', RISK_PRESET, RISK_MAX_CANDIDATES,
+             RISK_PENALTY_LIMIT, g.risk_bars))
     print('  分钟线风控: %s (回看 %d 个交易日, 取 %d 根1分钟K线)'
           % ('开' if INTRADAY_ENABLED else '关', INTRADAY_DAYS, g.intraday_bars))
     print('  大盘风控: %s (%s 跌破 MA%d -> %s)'
@@ -481,11 +483,39 @@ def select_target(pool, C, bar_date):
     target, result, rejected = pick_first_passing(candidates, evaluator, RISK_MAX_CANDIDATES)
 
     for stock, rejected_result in rejected:
-        print('[风控] %s %s %s' % (stock, C.get_stock_name(stock), rejected_result.describe()))
+        print('[风控] %s %s %s' % (stock, C.get_stock_name(stock),
+                                   rejected_result.describe()))
+        if RISK_DEBUG:
+            print('[风控明细] %s %s' % (stock, format_metrics(rejected_result.metrics)))
         for reason in rejected_result.reasons:
             g.reject_stats[reason] = g.reject_stats.get(reason, 0) + 1
 
+    if target is None and rejected:
+        # 今天一只都没过：把原因汇总打出来，方便定位是哪条规则拦死了全场
+        counts = sorted(reason_counts(rejected).items(), key=lambda kv: kv[1], reverse=True)
+        print('[风控] %d 只候选全部否决，原因分布: %s' % (len(rejected), counts))
+
+        if RISK_FALLBACK_TO_BEST:
+            target, result = best_of_rejected(rejected)
+            if target is not None:
+                print('[风控] 兜底买入扣分最低的 %s %s' % (target, result.describe()))
+
+    if target is not None and RISK_DEBUG and result is not None:
+        print('[风控明细] %s %s' % (target, format_metrics(result.metrics)))
+
     return target, result
+
+
+def format_metrics(metrics):
+    """把风控指标格式化成一行，便于按真实数据校准阈值（RISK_DEBUG=True 时打印）。"""
+    parts = []
+    for key in sorted(metrics):
+        value = metrics[key]
+        if isinstance(value, float):
+            parts.append('%s=%.4g' % (key, value))
+        else:
+            parts.append('%s=%s' % (key, value))
+    return ' '.join(parts)
 
 
 def check_risk(stock, C, bar_date, risk_data, score=None, minute_cache=None):
@@ -524,9 +554,7 @@ def check_risk(stock, C, bar_date, risk_data, score=None, minute_cache=None):
     # 日线就没过的候选不必再拉分钟线（分钟数据量大，能省则省）
     if INTRADAY_ENABLED and result.passed:
         reasons, metrics = check_intraday(stock, C, bar_date, minute_cache)
-        result.reasons.extend(reasons)
-        result.metrics.update(metrics)
-        result.passed = not result.reasons
+        result.add(reasons, metrics)
 
     return result
 

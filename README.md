@@ -23,7 +23,7 @@ qmt/
 └── strategy_backtest.py  QMT 回测脚本：init / handlebar / stop + 取数 + 下单
 tools/
 └── bundle_qmt.py         打包成单文件，方便直接贴进 QMT 客户端
-tests/                    161 个单元测试 + 模拟 QMT 环境的端到端测试
+tests/                    182 个单元测试 + 模拟 QMT 环境的端到端测试
 reference/                原始脚本存档
 ```
 
@@ -56,7 +56,7 @@ PROJECT_ROOT = r'D:\quant\RM_industry'
 
 ```bash
 pip install -r requirements-dev.txt
-python -m pytest            # 161 passed
+python -m pytest            # 182 passed
 ```
 
 测试不需要 QMT：`tests/fake_qmt.py` 模拟了 `ContextInfo`、`passorder`、
@@ -70,7 +70,7 @@ python -m pytest            # 161 passed
 | 1 | 大盘风控：沪深 300 跌破 MA20 则不开新仓（可配置为清仓） | `check_market` + `risk.market_is_healthy` |
 | 2 | 取板块成分股，过滤停牌 / ST / 市值不在 30~500 亿 / 跌停 | `get_stock_pool` + `universe.passes_filters` |
 | 3 | 对每只股票的对数收盘价做线性回归，按 `年化收益率 × R² 绝对值` 打分排序 | `rank_candidates` + `scoring.rank_pool` |
-| 4 | **日线风控**：连板 / 涨幅 / 乖离 / 波动 / 量能 / 次新 / 跳空 | `select_target` + `risk.evaluate_candidate` |
+| 4 | **日线风控**：连板 / 涨幅 / 乖离 / 波动 / 量能 / 次新 / 跳空。少数高精度规则硬否决，其余扣分累计到上限才否决 | `select_target` + `risk.evaluate_candidate` |
 | 4b | **分钟线风控**：前几日炸板 / 尾盘跳水 / 收在日内低位 / 跌破 VWAP / 高位派发 / 触及跌停 / 天量滞涨；第 1 名被否决就顺延看第 2 名 | `check_intraday` + `intraday.evaluate_sessions` |
 | 5 | 计算目标股由远及近的 6 个历史动量分数 | `rank_stock_change` + `scoring.momentum_score_history` |
 | 6 | 目标股停牌 / 跌停则放弃 | `filter_target` |
@@ -102,16 +102,20 @@ python -m pytest            # 161 passed
 | `RSRS_ENABLED` | `False` | 保持原逻辑：RSRS 只打印不介入；置 `True` 后低于 `RSRS_BUY_THRESHOLD` 不买入 |
 | `LIMIT_RATIO_BY_PREFIX` | 300/301/688 → 20% | 涨跌停幅度，其余 10% |
 | `RISK_ENABLED` | `True` | 风控总开关；单条阈值设为 `None` 即关闭该项 |
-| `RISK_MAX_CANDIDATES` | 5 | 第 1 名被否决后，沿排名往下最多再试几只 |
-| `RISK_MAX_CONSECUTIVE_LIMIT_UP` | 0 | 前一日涨停就不碰（拦跌停最有效的一条） |
-| `RISK_MAX_GAIN_SHORT` / `LONG` | 25% / 60% | 近 5 日、近 20 日累计涨幅上限 |
-| `RISK_MAX_BIAS` | 20% | 相对 MA20 的乖离率上限 |
-| `RISK_MAX_GAP_UP` / `DOWN` | 5% / 5% | 当日高开、低开超过该幅度不买 |
+| `RISK_PRESET` | `'normal'` | 三档预设：`loose` / `normal` / `strict`，一行切换整套阈值 |
+| `RISK_PENALTY_LIMIT` | 4 | 软规则扣分累计达到该值才否决（`=1` 即"命中一条就否决"） |
+| `RISK_MAX_CANDIDATES` | 30 | 第 1 名被否决后，沿排名往下最多再试几只 |
+| `RISK_MAX_CONSECUTIVE_LIMIT_UP` | 0 | 前一日涨停就不碰（硬否决，拦跌停最有效的一条） |
+| `RISK_MAX_GAIN_SHORT` / `LONG` | 40% / 100% | 近 5 日、近 20 日累计涨幅上限 |
+| `RISK_MAX_BIAS` | 30% | 相对 MA20 的乖离率上限 |
+| `RISK_MAX_GAP_UP` / `DOWN` | 7% / 7% | 当日高开、低开超过该幅度不买 |
+| `RISK_FALLBACK_TO_BEST` | `False` | 全被否决时是否兜底买扣分最低的那只 |
+| `RISK_DEBUG` | `False` | 打印每只候选的风控指标明细，用于按真实数据校准阈值 |
 | `INTRADAY_ENABLED` | `True` | 分钟线风控总开关，回看 `INTRADAY_DAYS`(=3) 个完整交易日 |
 | `INTRADAY_MAX_FAILED_LIMIT_UP` | 0 | 近 3 日炸板（摸涨停没封住）次数上限 |
-| `INTRADAY_MIN_TAIL_RETURN` | -3% | 最近一日尾盘 30 分钟跌幅下限 |
-| `INTRADAY_MAX_DOWN_AMOUNT_RATIO` | 0.60 | 下跌分钟成交额占比上限 |
-| `INTRADAY_MAX_POST_HIGH_AMOUNT_RATIO` | 0.65 | 日内最高点之后的成交额占比上限 |
+| `INTRADAY_MIN_TAIL_RETURN` | -4% | 最近一日尾盘 30 分钟跌幅下限 |
+| `INTRADAY_MAX_DOWN_AMOUNT_RATIO` | 0.70 | 下跌分钟成交额占比上限 |
+| `INTRADAY_MAX_POST_HIGH_AMOUNT_RATIO` | 0.75 | 日内最高点之后的成交额占比上限 |
 | `INTRADAY_REQUIRE_DATA` | `False` | 分钟数据缺失时是否直接否决（QMT 默认没下载分钟数据） |
 | `MARKET_FILTER_ENABLED` | `True` | 沪深 300 跌破 MA20 时 `no_new`（或 `exit_all`） |
 | `TRAILING_STOP_RATIO` | 10% | 从持仓期间最高价回撤该比例即离场 |

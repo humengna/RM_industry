@@ -4,7 +4,7 @@
 import pytest
 
 from momentum_timing.risk import (
-    RiskParams, annualized_volatility, average_amount, average_amplitude, bias_ratio,
+    RiskParams, RiskResult, annualized_volatility, average_amount, average_amplitude, bias_ratio,
     consecutive_limit_up, cumulative_return, evaluate_candidate, gap_ratio,
     history_bars_needed, hit_limit_down, hit_limit_up, limit_down_count, limit_up_count,
     market_is_healthy, moving_average, pick_first_passing, turnover_rate, volume_ratio,
@@ -166,8 +166,8 @@ def test_consecutive_limit_up_is_rejected():
 
 def test_too_many_limit_ups_in_window_is_rejected():
     closes = [10.0] * 60
-    # 近 10 日里塞 3 个涨停，但不连板
-    for i in (-9, -6, -3):
+    # 近 10 日里塞 4 个涨停（上限 3），但不连板
+    for i in (-9, -7, -5, -3):
         closes[i] = round(closes[i - 1] * 1.1, 2)
     history = {'close': closes, 'pre_close': with_pre_close(closes)}
 
@@ -176,7 +176,7 @@ def test_too_many_limit_ups_in_window_is_rejected():
 
 
 def test_short_term_surge_is_rejected():
-    closes = [10.0] * 55 + [10.0, 11.0, 12.0, 12.6, 13.2]
+    closes = [10.0] * 55 + [10.0, 11.5, 12.8, 14.0, 15.0]   # 5 日 +50%
     history = {'close': closes, 'pre_close': with_pre_close(closes)}
 
     result = evaluate_candidate('600000.SH', history, score=5.0)
@@ -187,7 +187,9 @@ def test_short_term_surge_is_rejected():
 def test_recent_limit_down_is_rejected():
     history = normal_history()
     closes = list(history['close'])
-    closes[-30] = round(closes[-31] * 0.9, 2)      # 30 个交易日前吃过跌停
+    # 近 60 日吃过 2 次跌停（上限 1 次）
+    closes[-30] = round(closes[-31] * 0.9, 2)
+    closes[-20] = round(closes[-21] * 0.9, 2)
     history['close'] = closes
     history['pre_close'] = with_pre_close(closes)
 
@@ -272,8 +274,6 @@ def test_unknown_param_raises():
 # ---------- 排名顺延 ----------
 
 def test_pick_first_passing_walks_down_the_ranking():
-    from momentum_timing.risk import RiskResult
-
     verdicts = {
         'A.SH': RiskResult(False, ['limit_up_streak']),
         'B.SH': RiskResult(False, ['gain_short']),
@@ -287,8 +287,6 @@ def test_pick_first_passing_walks_down_the_ranking():
 
 
 def test_pick_first_passing_respects_max_candidates():
-    from momentum_timing.risk import RiskResult
-
     verdicts = {'A.SH': RiskResult(False, ['x']), 'B.SH': RiskResult(True)}
     ranked = [('A.SH', 9.0), ('B.SH', 5.0)]
 
@@ -296,3 +294,151 @@ def test_pick_first_passing_respects_max_candidates():
                                                  max_candidates=1)
     assert stock is None and result is None
     assert len(rejected) == 1
+
+
+# ---------- 硬否决 + 扣分制 ----------
+
+def test_single_soft_rule_does_not_reject():
+    """一条软规则不足以否决——否则二十多条规则连乘，谁都过不了。"""
+    result = RiskResult(reasons=['gain_short'])
+    assert result.passed is True
+    assert result.penalty == 1
+    assert result.describe().startswith('PASS(扣分1')
+
+
+def test_soft_rules_accumulate_to_rejection():
+    result = RiskResult(reasons=['gain_short', 'bias', 'volume_spike', 'turnover'])
+    assert result.passed is False
+    assert result.penalty == 4
+    assert '扣分4>=4' in result.describe()
+
+
+def test_heavy_soft_rule_rejects_alone():
+    """跳空开盘这类高精度信号单条即可否决。"""
+    result = RiskResult(reasons=['gap_up'])
+    assert result.passed is False
+    assert result.penalty == 4
+
+
+def test_hard_rule_rejects_regardless_of_penalty():
+    result = RiskResult(reasons=['limit_up_streak'])
+    assert result.passed is False
+    assert result.hard == ['limit_up_streak']
+    assert result.penalty == 0
+    assert '硬否决' in result.describe()
+
+
+def test_add_merges_and_recomputes():
+    result = RiskResult(reasons=['gain_short'], metrics={'gain_short': 0.5})
+    assert result.passed is True
+
+    result.add(['tail_selloff'], {'tail_return': -0.05})
+    assert result.passed is False
+    assert result.penalty == 5
+    assert result.metrics['tail_return'] == -0.05
+
+
+def test_add_ignores_duplicates():
+    result = RiskResult(reasons=['gain_short'])
+    result.add(['gain_short'])
+    assert result.reasons == ['gain_short']
+    assert result.penalty == 1
+
+
+def test_custom_limit_and_weights():
+    strict = RiskResult(reasons=['gain_short'], limit=1)
+    assert strict.passed is False
+
+    loose = RiskResult(reasons=['gap_up'], limit=10)
+    assert loose.passed is True
+
+    weighted = RiskResult(reasons=['bias'], weights={'bias': 9}, limit=4)
+    assert weighted.passed is False
+
+
+def test_explicit_passed_wins_at_construction():
+    assert RiskResult(True, ['gap_up']).passed is True
+    assert RiskResult(False, ['gain_short']).passed is False
+
+
+def test_rule_penalty_defaults():
+    from momentum_timing.risk import rule_penalty
+
+    assert rule_penalty('gap_up') == 4
+    assert rule_penalty('不存在的规则') == 1
+    assert rule_penalty('bias', weights={'bias': 7}) == 7
+
+
+def test_evaluate_candidate_tolerates_one_soft_hit():
+    """只是"涨得多"这一条，不该把票拦掉。"""
+    closes = [10.0] * 55 + [10.0, 11.5, 12.8, 14.0, 15.0]
+    history = {'close': closes, 'pre_close': with_pre_close(closes)}
+
+    result = evaluate_candidate('600000.SH', history, score=5.0)
+    assert 'gain_short' in result.reasons
+    # gain_short + bias 两条 = 2 分 < 4，放行
+    assert result.passed is True
+
+
+def test_best_of_rejected_picks_lowest_penalty():
+    from momentum_timing.risk import best_of_rejected
+
+    light = RiskResult(reasons=['gain_short', 'bias', 'volume_spike', 'turnover'])
+    heavy = RiskResult(reasons=['gap_up', 'tail_selloff'])
+    hard = RiskResult(reasons=['limit_up_streak'])
+
+    stock, result = best_of_rejected([('A.SH', heavy), ('B.SH', light), ('C.SH', hard)])
+    assert stock == 'B.SH' and result is light
+
+
+def test_best_of_rejected_skips_hard_violations():
+    from momentum_timing.risk import best_of_rejected
+
+    stock, result = best_of_rejected([('A.SH', RiskResult(reasons=['limit_up_streak']))])
+    assert stock is None and result is None
+
+
+def test_reason_counts_aggregates():
+    from momentum_timing.risk import reason_counts
+
+    rejected = [('A.SH', RiskResult(reasons=['gain_short', 'bias'])),
+                ('B.SH', RiskResult(reasons=['gain_short']))]
+    assert reason_counts(rejected) == {'gain_short': 2, 'bias': 1}
+
+
+def test_preset_is_a_known_value():
+    from momentum_timing import config
+
+    assert config.RISK_PRESET in ('loose', 'normal', 'strict')
+    assert config.RISK_MAX_CANDIDATES >= 10
+
+
+def test_presets_move_thresholds_in_the_right_direction():
+    """三档预设：loose 最宽松，strict 最严格。"""
+    import io
+    import os
+
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        'momentum_timing', 'config.py')
+    source = io.open(path, encoding='utf-8').read()
+
+    loaded = {}
+    for preset in ('loose', 'normal', 'strict'):
+        namespace = {}
+        exec(compile(source.replace("RISK_PRESET = 'normal'", "RISK_PRESET = '%s'" % preset),
+                     'config', 'exec'), namespace)
+        loaded[preset] = namespace
+
+    assert (loaded['loose']['RISK_PENALTY_LIMIT']
+            > loaded['normal']['RISK_PENALTY_LIMIT']
+            > loaded['strict']['RISK_PENALTY_LIMIT'])
+    assert (loaded['loose']['RISK_MAX_GAIN_SHORT']
+            > loaded['normal']['RISK_MAX_GAIN_SHORT']
+            > loaded['strict']['RISK_MAX_GAIN_SHORT'])
+    assert (loaded['loose']['RISK_MAX_CANDIDATES']
+            > loaded['normal']['RISK_MAX_CANDIDATES']
+            > loaded['strict']['RISK_MAX_CANDIDATES'])
+    # 连板永远是硬否决，任何档位都不放开
+    for preset in loaded:
+        assert loaded[preset]['RISK_MAX_CONSECUTIVE_LIMIT_UP'] == 0
+        assert 'limit_up_streak' in loaded[preset]['RISK_HARD_RULES']

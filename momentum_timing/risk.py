@@ -15,6 +15,7 @@
 import math
 
 from .config import (
+    RISK_DEFAULT_PENALTY, RISK_HARD_RULES, RISK_PENALTY_LIMIT, RISK_RULE_PENALTY,
     RISK_LIMIT_DOWN_WINDOW, RISK_LIMIT_UP_WINDOW, RISK_MAX_AMPLITUDE,
     RISK_MAX_BIAS, RISK_MAX_CONSECUTIVE_LIMIT_UP, RISK_MAX_GAIN_LONG,
     RISK_MAX_GAIN_SHORT, RISK_MAX_GAP_DOWN, RISK_MAX_GAP_UP,
@@ -242,22 +243,69 @@ class RiskParams(object):
             setattr(self, key, value)
 
 
-class RiskResult(object):
-    """风控结论：是否通过、否决原因、各项指标（用于日志与复盘）。"""
+def rule_penalty(reason, weights=None, default=None):
+    """单条软规则的扣分。"""
+    weights = RISK_RULE_PENALTY if weights is None else weights
+    default = RISK_DEFAULT_PENALTY if default is None else default
+    return weights.get(reason, default)
 
-    def __init__(self, passed, reasons=None, metrics=None):
-        self.passed = passed
-        self.reasons = reasons or []
-        self.metrics = metrics or {}
+
+class RiskResult(object):
+    """
+    风控结论。
+
+    判定分两层，避免"二十条规则全用命中即否决"导致谁都过不了：
+      硬否决  命中 RISK_HARD_RULES 里的任意一条 -> 直接出局
+      扣分制  其余规则各自扣分，累计 >= RISK_PENALTY_LIMIT 才出局
+
+    passed 显式传入时以传入值为准（构造已知结论的场景）；
+    调用 add() 追加原因后一律按上面的规则重新判定。
+    """
+
+    def __init__(self, passed=None, reasons=None, metrics=None,
+                 hard_rules=None, weights=None, limit=None, default_penalty=None):
+        self.hard_rules = RISK_HARD_RULES if hard_rules is None else hard_rules
+        self.weights = RISK_RULE_PENALTY if weights is None else weights
+        self.limit = RISK_PENALTY_LIMIT if limit is None else limit
+        self.default_penalty = (RISK_DEFAULT_PENALTY if default_penalty is None
+                                else default_penalty)
+        self.reasons = list(reasons or [])
+        self.metrics = dict(metrics or {})
+
+        self.recompute()
+        if passed is not None:
+            self.passed = passed
+
+    def recompute(self):
+        """按硬否决 + 扣分重新判定。"""
+        self.hard = [r for r in self.reasons if r in self.hard_rules]
+        self.penalty = sum(rule_penalty(r, self.weights, self.default_penalty)
+                           for r in self.reasons if r not in self.hard_rules)
+        self.passed = not self.hard and self.penalty < self.limit
+        return self.passed
+
+    def add(self, reasons=None, metrics=None):
+        """追加否决原因与指标（例如把分钟线的结论并进来），并重新判定。"""
+        for reason in reasons or []:
+            if reason not in self.reasons:
+                self.reasons.append(reason)
+        if metrics:
+            self.metrics.update(metrics)
+        return self.recompute()
 
     def __repr__(self):
-        return 'RiskResult(passed=%s, reasons=%s)' % (self.passed, self.reasons)
+        return ('RiskResult(passed=%s, penalty=%s, reasons=%s)'
+                % (self.passed, self.penalty, self.reasons))
 
     def describe(self):
         """给日志用的一行说明。"""
         if self.passed:
-            return 'PASS'
-        return 'REJECT(%s)' % ','.join(self.reasons)
+            return 'PASS' if not self.reasons else 'PASS(扣分%d/%d: %s)' % (
+                self.penalty, self.limit, ','.join(self.reasons))
+        if self.hard:
+            return 'REJECT[硬否决: %s]' % ','.join(self.hard)
+        return 'REJECT[扣分%d>=%d: %s]' % (
+            self.penalty, self.limit, ','.join(self.reasons))
 
 
 # ============================================================
@@ -323,7 +371,7 @@ def evaluate_candidate(stock, history, today=None, params=None, listed_days=None
 
     if len(closes) < 2 or len(pre_closes) < 2:
         reasons.append('data_insufficient')
-        return RiskResult(False, reasons, metrics)
+        return RiskResult(reasons=reasons, metrics=metrics)
 
     # ---------- 过热：连板 / 涨停次数 / 累计涨幅 / 乖离 ----------
     streak = consecutive_limit_up(stock, closes, pre_closes)
@@ -409,7 +457,7 @@ def evaluate_candidate(stock, history, today=None, params=None, listed_days=None
         if params.max_gap_down is not None and gap < -abs(params.max_gap_down):
             reasons.append('gap_down')
 
-    return RiskResult(not reasons, reasons, metrics)
+    return RiskResult(reasons=reasons, metrics=metrics)
 
 
 def market_is_healthy(index_closes, ma_window):
@@ -444,3 +492,24 @@ def pick_first_passing(ranked, evaluator, max_candidates=None):
             return stock, result, rejected
         rejected.append((stock, result))
     return None, None, rejected
+
+
+def best_of_rejected(rejected):
+    """
+    全部被否决时，挑扣分最低且没有硬否决的那只。
+
+    给 RISK_FALLBACK_TO_BEST 用；没有可选的返回 (None, None)。
+    """
+    candidates = [(stock, result) for stock, result in rejected if not result.hard]
+    if not candidates:
+        return None, None
+    return min(candidates, key=lambda item: item[1].penalty)
+
+
+def reason_counts(rejected):
+    """把否决原因汇总成 {原因: 次数}，用于定位"是哪条规则把票全拦了"。"""
+    counts = {}
+    for _stock, result in rejected:
+        for reason in result.reasons:
+            counts[reason] = counts.get(reason, 0) + 1
+    return counts
