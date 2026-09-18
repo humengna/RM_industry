@@ -16,8 +16,8 @@
 from . import signals
 from .config import (
     CASH_BUFFER, COMMISSION_RATE, INIT_CASH, LOT_SIZE, MAX_HOLDINGS,
-    MIN_COMMISSION, RESPECT_PRICE_LIMITS, SLIPPAGE, SORT_ASCENDING,
-    STAMP_TAX_RATE, TARGET_WEIGHT, TRANSFER_FEE_RATE, T_PLUS_1,
+    MAX_POSITION_WEIGHT, MIN_COMMISSION, RESPECT_PRICE_LIMITS, SLIPPAGE,
+    SORT_ASCENDING, STAMP_TAX_RATE, TARGET_WEIGHT, TRANSFER_FEE_RATE, T_PLUS_1,
 )
 
 LIMIT_RATIO_BY_PREFIX = {'300': 0.20, '301': 0.20, '688': 0.20, '8': 0.30, '4': 0.30}
@@ -59,11 +59,18 @@ def sell_cost(amount, commission_rate=COMMISSION_RATE, min_commission=MIN_COMMIS
 
 
 def target_volume(available_cash, total_assets, price, remaining, weight=TARGET_WEIGHT,
-                  lot_size=LOT_SIZE, buffer=CASH_BUFFER):
-    """与原脚本一致的下单量计算。"""
+                  lot_size=LOT_SIZE, buffer=CASH_BUFFER,
+                  max_weight=MAX_POSITION_WEIGHT):
+    """
+    下单量：与原脚本一致的 min(总资产×目标仓位, 可用资金÷待买只数) × 0.98，
+    再额外受单只仓位上限 max_weight 约束，最后向下取整到手。
+    """
     if price is None or price <= 0 or available_cash <= 0 or remaining <= 0:
         return 0
-    amount = min(total_assets * weight, available_cash / float(remaining)) * buffer
+
+    effective_weight = weight if max_weight is None else min(weight, max_weight)
+    amount = min(total_assets * effective_weight,
+                 available_cash / float(remaining)) * buffer
     volume = int(amount / price / lot_size) * lot_size
     return volume if volume >= lot_size else 0
 
@@ -125,13 +132,16 @@ class Backtest(object):
     def __init__(self, bars, trading_days, provider, init_cash=INIT_CASH,
                  max_holdings=MAX_HOLDINGS, ascending=SORT_ASCENDING,
                  execution_price='open', respect_limits=RESPECT_PRICE_LIMITS,
-                 slippage=SLIPPAGE, verbose=True, print_all_candidates=False):
+                 slippage=SLIPPAGE, verbose=True, print_all_candidates=False,
+                 max_weight=MAX_POSITION_WEIGHT):
         self.bars = bars
         self.trading_days = list(trading_days)
         self.provider = provider
         self.portfolio = Portfolio(init_cash)
         self.init_cash = float(init_cash)
         self.max_holdings = max_holdings
+        self.target_weight = 1.0 / max_holdings if max_holdings else TARGET_WEIGHT
+        self.max_weight = max_weight
         self.ascending = ascending
         self.execution_price = execution_price
         self.respect_limits = respect_limits
@@ -218,7 +228,8 @@ class Backtest(object):
                 remaining -= 1
                 continue
 
-            volume = target_volume(self.portfolio.cash, total_assets, price, remaining)
+            volume = target_volume(self.portfolio.cash, total_assets, price, remaining,
+                                   weight=self.target_weight, max_weight=self.max_weight)
             if volume <= 0:
                 self.skip('资金不足')
                 remaining -= 1
