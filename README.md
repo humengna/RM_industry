@@ -34,7 +34,9 @@ qmt/
 tools/
 ├── bundle_qmt.py         打包成单文件，方便直接贴进 QMT 客户端
 └── import_constituents_xlsx.py  Excel 历史成分股 -> 回测缓存 CSV
-tests/                    318 个单元测试 + 模拟 QMT 环境的端到端测试
+single_file/              生成好的单文件（UTF-8 / GBK 两版），复制即用
+data/hs300_constituents.csv  沪深300 历史成分股（point-in-time，回测输入）
+tests/                    318 个单元测试 + 模拟 QMT / xtdata 环境的端到端测试
 reference/                原始脚本存档
 ```
 
@@ -42,12 +44,22 @@ reference/                原始脚本存档
 
 ### 方式 A：单文件（推荐，QMT 客户端里最省事）
 
-```bash
-python tools/bundle_qmt.py          # 生成 dist/momentum_timing_qmt.py（GBK 编码）
-```
+仓库里已经放好了生成好的单文件，直接取用即可：
 
-把生成的文件内容贴进 QMT 的策略编辑器 → 点击"回测" → 选择主图品种（如沪深 300）
-→ 设置回测区间与初始资金 → 运行。生成的文件是自包含的，不需要配置任何路径。
+- [`single_file/momentum_timing_qmt_utf8.py`](single_file/momentum_timing_qmt_utf8.py)（UTF-8，**默认用这个**，适合网页复制）
+- [`single_file/momentum_timing_qmt_gbk.py`](single_file/momentum_timing_qmt_gbk.py)（GBK，老版本 QMT 用，下载后本地打开）
+
+全选复制 → 粘贴进 QMT 的策略编辑器 → 点击"回测" → 选择主图品种（如沪深 300）
+→ 回测周期选**日线** → 设置回测区间与初始资金 → 运行。
+文件是自包含的，不需要配置任何路径。用法细节见
+[`single_file/README.md`](single_file/README.md)。
+
+改了源码之后重新生成：
+
+```bash
+python tools/bundle_qmt.py -e utf-8 -o single_file/momentum_timing_qmt_utf8.py
+python tools/bundle_qmt.py -e gbk   -o single_file/momentum_timing_qmt_gbk.py
+```
 
 ### 方式 B：项目方式
 

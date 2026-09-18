@@ -4,6 +4,8 @@
 import os
 import sys
 
+import pytest
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, 'tools'))
 
@@ -71,3 +73,25 @@ def test_bundled_script_runs_a_full_bar():
     buys = [o for o in broker.orders if o['op_type'] == namespace['OP_BUY']]
     assert len(buys) == 1
     assert buys[0]['stock'] == '600001.SH'
+
+
+def test_committed_single_file_matches_sources():
+    """single_file/ 里的单文件必须和当前源码一致（改了源码要记得重新生成）。"""
+    import io
+
+    variants = [('momentum_timing_qmt_utf8.py', 'utf-8'),
+                ('momentum_timing_qmt_gbk.py', 'gbk')]
+    checked = 0
+
+    for name, encoding in variants:
+        path = os.path.join(ROOT, 'single_file', name)
+        if not os.path.exists(path):
+            continue
+        with io.open(path, encoding=encoding) as fp:
+            committed = fp.read()
+        assert committed == bundle_qmt.build(encoding), (
+            '%s 与源码不一致，请重新运行 tools/bundle_qmt.py' % name)
+        checked += 1
+
+    if checked == 0:
+        pytest.skip('该分支没有 single_file/ 目录')
