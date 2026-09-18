@@ -156,3 +156,40 @@ def test_dump_constituents_works_on_empty_data_dir(tmp_path):
 
     assert '000300.SH' in xt.downloaded
     assert provider.all_members()
+
+
+# ---------- 持仓数量可配置 ----------
+
+@pytest.mark.parametrize('holdings', [1, 2, 3, 5])
+def test_max_holdings_is_configurable(tmp_path, holdings):
+    result, _summary, _files = run(tmp_path, max_holdings=holdings)
+    assert max(row['holdings'] for row in result['equity']) <= holdings
+
+
+def test_target_weight_follows_holdings(tmp_path):
+    """单只目标仓位 = 1 / 持仓数，并受 MAX_POSITION_WEIGHT 上限约束。"""
+    from hs300_ma_divergence.engine import Backtest
+
+    for holdings, expected in [(2, 0.5), (4, 0.25), (10, 0.1)]:
+        backtest = Backtest({}, [], None, max_holdings=holdings)
+        assert backtest.target_weight == pytest.approx(expected)
+
+
+def test_holdings_printed_at_startup(tmp_path, capsys):
+    run(tmp_path, max_holdings=3)
+    out = capsys.readouterr().out
+    assert '持仓 3 只' in out
+    assert '33.3%' in out
+
+
+def test_single_holding_still_capped_by_max_weight(tmp_path, capsys):
+    run(tmp_path, max_holdings=1)
+    out = capsys.readouterr().out
+    assert '持仓 1 只' in out
+    assert '受上限' in out          # 1/1=100% 被 50% 上限压下来
+
+
+def test_invalid_holdings_rejected(tmp_path):
+    with pytest.raises(ValueError) as excinfo:
+        run(tmp_path, max_holdings=0)
+    assert '必须 >= 1' in str(excinfo.value)

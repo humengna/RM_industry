@@ -53,7 +53,7 @@ python -m hs300_ma_divergence --start 20200101 --end 20241231 --dump-constituent
 | 参数 | 说明 |
 | --- | --- |
 | `--cash` | 初始资金，默认 100 万 |
-| `--max-holdings` | 最大持仓数，默认 2 |
+| `--max-holdings` / `-n` | 持仓股票数量，默认 2。单只目标仓位 = 1 / 该值 |
 | `--max-weight` | 单只票的仓位上限，默认 0.50 |
 | `--descending` | 按总发散度从大到小取前 N（原脚本实际是从小到大） |
 | `--granularity day\|month` | 成分股快照粒度，默认 month |
@@ -61,6 +61,33 @@ python -m hs300_ma_divergence --start 20200101 --end 20241231 --dump-constituent
 | `--slippage 0.001` | 滑点比例 |
 | `--no-limits` | 不考虑一字涨跌停的成交限制 |
 | `--quiet` / `--all-candidates` | 控制日志详细程度 |
+
+## 持仓数量与仓位
+
+持仓几只、每只多大仓位，两种改法：
+
+```bash
+# 临时试：命令行
+python -m hs300_ma_divergence -n 3 --start 20200101 --end 20260918 --quiet
+
+# 长期用：改 config.py
+MAX_HOLDINGS = 3
+```
+
+单只目标仓位自动等于 `1 / 持仓数`，再受 `MAX_POSITION_WEIGHT`（默认 50%）约束：
+
+| 持仓数 | 单只目标仓位 | 说明 |
+| --- | --- | --- |
+| 1 | 100% → **50%** | 被上限压下来，另一半留现金 |
+| 2 | 50% | 默认 |
+| 3 | 33.3% | |
+| 5 | 20% | 原脚本的设置 |
+
+每次运行开头会打印实际生效的设置，例如：
+
+```
+[配置] 持仓 3 只，单只目标仓位 33.3%；排序 发散度最小优先；初始资金 1000000
+```
 
 ## 历史成分股（point-in-time）
 
