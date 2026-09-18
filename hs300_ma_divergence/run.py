@@ -42,19 +42,25 @@ def run_backtest(start=config.START_DATE, end=config.END_DATE, cash=config.INIT_
                  dividend_type=config.DIVIDEND_TYPE, verbose=config.PRINT_DAILY,
                  print_all_candidates=config.PRINT_ALL_CANDIDATES,
                  respect_limits=config.RESPECT_PRICE_LIMITS, slippage=config.SLIPPAGE,
-                 max_weight=config.MAX_POSITION_WEIGHT, write_files=True):
+                 max_weight=config.MAX_POSITION_WEIGHT, rank_start=config.RANK_START,
+                 write_files=True):
     """跑一次完整回测，返回 (result, summary, files)。"""
     if not max_holdings or max_holdings < 1:
         raise ValueError('持仓股票数量必须 >= 1，当前为 %s' % max_holdings)
+    if not rank_start or rank_start < 1:
+        raise ValueError('排名起点必须 >= 1，当前为 %s' % rank_start)
 
     target_weight = 1.0 / max_holdings
     effective_weight = target_weight if max_weight is None else min(target_weight, max_weight)
 
-    print('[配置] 持仓 %d 只，单只目标仓位 %.1f%%%s；排序 %s；初始资金 %.0f'
-          % (max_holdings, effective_weight * 100,
+    print('[配置] 持仓 %d 只（%s第 %d~%d 名），单只目标仓位 %.1f%%%s；初始资金 %.0f'
+          % (max_holdings,
+             '发散度升序' if ascending else '发散度倒序',
+             rank_start, rank_start + max_holdings - 1,
+             effective_weight * 100,
              '（受上限 %.0f%% 约束）' % (max_weight * 100)
              if max_weight is not None and target_weight > max_weight else '',
-             '发散度最小优先' if ascending else '发散度最大优先', cash))
+             cash))
 
     market = MarketData(xt=xt, dividend_type=dividend_type)
     data_start = shift_date(start, WARMUP_CALENDAR_DAYS)
@@ -95,13 +101,15 @@ def run_backtest(start=config.START_DATE, end=config.END_DATE, cash=config.INIT_
                         ascending=ascending, verbose=verbose,
                         print_all_candidates=print_all_candidates,
                         respect_limits=respect_limits, slippage=slippage,
-                        max_weight=max_weight)
+                        max_weight=max_weight, rank_start=rank_start)
     result = backtest.run()
     summary = summarize(result)
 
     params = {
         'start': start, 'end': end, 'init_cash': cash, 'max_holdings': max_holdings,
         'max_position_weight': max_weight, 'sort_ascending': ascending,
+        'rank_start': rank_start, 'rank_range': '%d-%d' % (rank_start,
+                                                           rank_start + max_holdings - 1),
         'dividend_type': dividend_type,
         'ma_periods': config.MA_PERIODS, 'constituent_source': source,
         'constituent_granularity': granularity, 'respect_price_limits': respect_limits,
@@ -153,6 +161,11 @@ def build_parser():
                              % config.MAX_HOLDINGS)
     parser.add_argument('--max-weight', type=float, default=config.MAX_POSITION_WEIGHT,
                         help='单只票的仓位上限，默认 %.2f' % config.MAX_POSITION_WEIGHT)
+    parser.add_argument('--rank-start', type=int, default=config.RANK_START,
+                        help='从排名第几位开始取（1 起算），默认 %d' % config.RANK_START)
+    parser.add_argument('--rank', default=None, metavar='N-M',
+                        help='排名区间简写，等价于同时设置 --rank-start 和 --max-holdings。'
+                             '例：--rank 3-5 表示取第 3、4、5 名')
     parser.add_argument('--download', action='store_true',
                         help='先补下载行情（首次运行必须加）')
     parser.add_argument('--out', default=config.OUTPUT_DIR, help='结果输出目录')
@@ -177,8 +190,26 @@ def build_parser():
     return parser
 
 
+def parse_rank_range(text):
+    """'3-5' -> (3, 3)：起点 3、取 3 只；'4' -> (4, 1)。"""
+    text = str(text).strip()
+    if '-' in text:
+        start_text, end_text = text.split('-', 1)
+        start, end = int(start_text), int(end_text)
+    else:
+        start = end = int(text)
+    if start < 1 or end < start:
+        raise ValueError('排名区间不合法：%s（应形如 3-5，且起点 >= 1）' % text)
+    return start, end - start + 1
+
+
 def main(argv=None):
     args = build_parser().parse_args(argv)
+
+    rank_start, max_holdings = args.rank_start, args.max_holdings
+    if args.rank:
+        rank_start, max_holdings = parse_rank_range(args.rank)
+
     xt = import_xtdata()
 
     if args.dump_constituents:
@@ -190,7 +221,8 @@ def main(argv=None):
         start=args.start, end=args.end, cash=args.cash, xt=xt, download=args.download,
         output_dir=args.out, cache_file=args.cache, granularity=args.granularity,
         allow_current_fallback=args.allow_current_constituents,
-        ascending=not args.descending, max_holdings=args.max_holdings,
+        ascending=not args.descending, max_holdings=max_holdings,
+        rank_start=rank_start,
         dividend_type=args.dividend, verbose=not args.quiet,
         print_all_candidates=args.all_candidates,
         respect_limits=not args.no_limits, slippage=args.slippage,

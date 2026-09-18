@@ -18,7 +18,7 @@
 
 import math
 
-from .config import HISTORY_COUNT, MA_PERIODS, MAX_HOLDINGS, SORT_ASCENDING
+from .config import HISTORY_COUNT, MA_PERIODS, MAX_HOLDINGS, RANK_START, SORT_ASCENDING
 
 
 def _finite(value):
@@ -136,30 +136,37 @@ def evaluate(stock, closes, periods=MA_PERIODS):
     return item
 
 
-def rank(candidates, top_n=MAX_HOLDINGS, ascending=SORT_ASCENDING):
+def rank(candidates, top_n=MAX_HOLDINGS, ascending=SORT_ASCENDING, start=RANK_START):
     """
-    按总发散度排序取前 top_n。
+    按总发散度排序，取排名 [start, start + top_n - 1] 这一段（start 从 1 起算）。
 
     ascending=True 是原脚本的真实行为（reverse=True 被注释掉了），
-    即取发散度最小的几只；改成 False 则取发散度最大的几只。
+    即发散度最小的排第 1；改成 False 则发散度最大的排第 1。
+
+    start=1 就是常规的"取前 top_n 名"；start=3、top_n=3 表示跳过前 2 名，
+    取第 3、4、5 名。候选不够时返回的就少，甚至为空（当天不开仓）。
     """
     ordered = sorted(candidates, key=lambda item: item['score'], reverse=not ascending)
-    return ordered[:top_n] if top_n else ordered
+    begin = max(int(start) - 1, 0)
+    if not top_n:
+        return ordered[begin:]
+    return ordered[begin:begin + top_n]
 
 
-def select(close_map, top_n=MAX_HOLDINGS, ascending=SORT_ASCENDING, periods=MA_PERIODS):
+def select(close_map, top_n=MAX_HOLDINGS, ascending=SORT_ASCENDING, periods=MA_PERIODS,
+           start=RANK_START):
     """
     对整个股票池选股。
 
     close_map: {股票: 截至当日的收盘价序列}
-    返回 (入选前 top_n 的记录, 全部有效候选)
+    返回 (选中的记录, 全部有效候选)
     """
     candidates = []
     for stock in sorted(close_map):
         item = evaluate(stock, close_map[stock], periods)
         if item is not None:
             candidates.append(item)
-    return rank(candidates, top_n, ascending), candidates
+    return rank(candidates, top_n, ascending, start), candidates
 
 
 def bars_needed(periods=MA_PERIODS):

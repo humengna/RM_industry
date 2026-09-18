@@ -55,12 +55,33 @@ python -m hs300_ma_divergence --start 20200101 --end 20241231 --dump-constituent
 | `--cash` | 初始资金，默认 100 万 |
 | `--max-holdings` / `-n` | 持仓股票数量，默认 2。单只目标仓位 = 1 / 该值 |
 | `--max-weight` | 单只票的仓位上限，默认 0.50 |
+| `--rank` `N-M` | 排名区间，例 `--rank 3-5`；等价于 `--rank-start 3 --max-holdings 3` |
+| `--rank-start` | 从排名第几位开始取（1 起算），默认 1 |
 | `--descending` | 按总发散度从大到小取前 N（原脚本实际是从小到大） |
 | `--granularity day\|month` | 成分股快照粒度，默认 month |
 | `--dividend front\|none\|back\|...` | 复权方式，默认前复权 |
 | `--slippage 0.001` | 滑点比例 |
 | `--no-limits` | 不考虑一字涨跌停的成交限制 |
 | `--quiet` / `--all-candidates` | 控制日志详细程度 |
+
+## 排名区间
+
+默认取排名前 N 名。想跳过最前面几名、取中间一段，用 `--rank`：
+
+```bash
+# 发散度倒序（大的排第 1），取第 3、4、5 名
+python -m hs300_ma_divergence --descending --rank 3-5 --start 20200101 --end 20260918 --quiet
+```
+
+`--rank 3-5` 等价于 `--rank-start 3 --max-holdings 3`。也可以分开写。
+
+排名方向由 `--descending` 决定：
+
+* 不加 = 升序，**发散度最小的排第 1**（原脚本的真实行为）
+* 加上 = 倒序，**发散度最大的排第 1**
+
+候选不够时不会退而求其次：某天只有 4 只有效信号而你要第 3-5 名，
+就只买到第 3、4 名；只有 2 只就当天不开仓。
 
 ## 持仓数量与仓位
 

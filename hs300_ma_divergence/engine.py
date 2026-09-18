@@ -17,7 +17,8 @@ from . import signals
 from .config import (
     CASH_BUFFER, COMMISSION_RATE, INIT_CASH, LOT_SIZE, MAX_HOLDINGS,
     MAX_POSITION_WEIGHT, MIN_COMMISSION, RESPECT_PRICE_LIMITS, SLIPPAGE,
-    SORT_ASCENDING, STAMP_TAX_RATE, TARGET_WEIGHT, TRANSFER_FEE_RATE, T_PLUS_1,
+    RANK_START, SORT_ASCENDING, STAMP_TAX_RATE, TARGET_WEIGHT, TRANSFER_FEE_RATE,
+    T_PLUS_1,
 )
 
 LIMIT_RATIO_BY_PREFIX = {'300': 0.20, '301': 0.20, '688': 0.20, '8': 0.30, '4': 0.30}
@@ -133,7 +134,7 @@ class Backtest(object):
                  max_holdings=MAX_HOLDINGS, ascending=SORT_ASCENDING,
                  execution_price='open', respect_limits=RESPECT_PRICE_LIMITS,
                  slippage=SLIPPAGE, verbose=True, print_all_candidates=False,
-                 max_weight=MAX_POSITION_WEIGHT):
+                 max_weight=MAX_POSITION_WEIGHT, rank_start=RANK_START):
         self.bars = bars
         self.trading_days = list(trading_days)
         self.provider = provider
@@ -142,6 +143,7 @@ class Backtest(object):
         self.max_holdings = max_holdings
         self.target_weight = 1.0 / max_holdings if max_holdings else TARGET_WEIGHT
         self.max_weight = max_weight
+        self.rank_start = rank_start
         self.ascending = ascending
         self.execution_price = execution_price
         self.respect_limits = respect_limits
@@ -203,7 +205,8 @@ class Backtest(object):
             if len(closes) >= need:
                 close_map[stock] = closes
 
-        return signals.select(close_map, self.max_holdings, self.ascending)
+        return signals.select(close_map, self.max_holdings, self.ascending,
+                              start=self.rank_start)
 
     # ---------- 撮合 ----------
 
