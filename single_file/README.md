@@ -44,8 +44,9 @@ STOP_LOSS_RATIO = -0.15        # 硬止损线
 DECLINE_DAYS_TO_SELL = 2       # 动量分数连续下降几天卖出
 ```
 
-`STRATEGY_MODE` 在文件**最后**一段生效（`if STRATEGY_MODE == 'original':` 会统一
-覆盖前面的风控开关），所以改这一行就够了，不用逐个去改 `RISK_ENABLED`。
+`STRATEGY_MODE` 在第 39 行附近；配置段末尾（第 330 行附近）的
+`if STRATEGY_MODE == 'original':` 会统一覆盖各个风控开关，
+所以只改 `STRATEGY_MODE` 这一行就够了，不用逐个去改 `RISK_ENABLED`。
 
 ## 重新生成
 
