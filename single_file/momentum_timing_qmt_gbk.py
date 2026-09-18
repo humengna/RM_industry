@@ -104,48 +104,92 @@ STOP_LOSS_RATIO = -0.15    # 硬止损线 -15%
 # 下面的阈值用于在下单前否决过热标的；设为 None 即关闭该项检查。
 RISK_ENABLED = True
 
-# 沿动量排名往下最多试几只候选股（第 1 名被风控否决就看第 2 名）
-RISK_MAX_CANDIDATES = 5
+# 沿动量排名往下最多试几只候选股（第 1 名被风控否决就看第 2 名）。
+# 这个值必须够大：打分公式天然把连板票排在最前面，只看前 5 名基本全是过热票，
+# 结果就是天天没票可买。30 只大约对应"排名前 0.6% 里挑一只能买的"。
+RISK_MAX_CANDIDATES = 30
 
 # 动量分数下限：分数 <= 该值说明标的本身没有上涨趋势，不买
 RISK_MIN_SCORE = 0.0
 
+# --- 硬否决 vs 扣分 ---
+# 二十多条规则如果全用"命中即否决"，任何一只票都过不了（每条都只有 80% 通过率，
+# 连乘下来就是 0）。所以只有少数高精度规则硬否决，其余命中一次扣若干分，
+# 扣分累计到 RISK_PENALTY_LIMIT 才否决。
+#
+# 想放松：调大 RISK_PENALTY_LIMIT（或改 RISK_PRESET = 'loose'）
+# 想收紧：调小 RISK_PENALTY_LIMIT（=1 时等价于"命中任何一条就否决"）
+RISK_PENALTY_LIMIT = 4
+
+# 硬否决规则：命中即出局，不看扣分
+RISK_HARD_RULES = (
+    'data_insufficient',    # 数据不够，没法判断
+    'weak_momentum',        # 分数 <= 0，本来就没有上涨趋势
+    'limit_up_streak',      # 连板，次日跌停的头号来源
+    'failed_limit_up',      # 炸板（分钟线）
+    'limit_down_touch',     # 近几日盘中触及跌停（分钟线）
+    'illiquid',             # 成交额太小，跌停时卖不掉
+    'new_listing',          # 次新股
+    'intraday_no_data',     # 分钟数据缺失且 INTRADAY_REQUIRE_DATA=True
+)
+
+# 软规则扣分权重，未列出的按 RISK_DEFAULT_PENALTY 计
+RISK_RULE_PENALTY = {
+    'gap_up': 4,            # 开盘就跳空，单条即可否决
+    'gap_down': 4,
+    'tail_selloff': 4,      # 前一日尾盘跳水
+    'intraday_crash': 2,
+    'tail_dump': 2,
+    'high_distribution': 2,
+    'limit_down_history': 2,
+}
+RISK_DEFAULT_PENALTY = 1
+
+# 所有候选都被否决时，是否退而求其次买"扣分最低且无硬否决"的那只。
+# 默认 False：宁可空仓也不买体检没过的票
+RISK_FALLBACK_TO_BEST = False
+
+# 打印每只候选的风控指标明细，用于按真实数据校准阈值（回测日志会很长）
+RISK_DEBUG = False
+
 # --- 过热：涨停与连板 ---
-RISK_MAX_CONSECUTIVE_LIMIT_UP = 0   # 允许的连板数上限，0 = 前一日涨停就不碰
-RISK_MAX_LIMIT_UP_COUNT = 2         # 近 RISK_LIMIT_UP_WINDOW 日涨停次数上限
+RISK_MAX_CONSECUTIVE_LIMIT_UP = 0   # 允许的连板数上限，0 = 前一日涨停就不碰【硬否决】
+RISK_MAX_LIMIT_UP_COUNT = 3         # 近 RISK_LIMIT_UP_WINDOW 日涨停次数上限
 RISK_LIMIT_UP_WINDOW = 10
 
 # --- 过热：累计涨幅与乖离 ---
-RISK_MAX_GAIN_SHORT = 0.25          # 近 5 日累计涨幅上限 25%
+# 注意：本策略选的就是动量最强的票，涨幅和乖离天然偏高，
+# 这几个阈值卡太死会和选股逻辑直接打架
+RISK_MAX_GAIN_SHORT = 0.40          # 近 5 日累计涨幅上限 40%
 RISK_GAIN_SHORT_WINDOW = 5
-RISK_MAX_GAIN_LONG = 0.60           # 近 20 日累计涨幅上限 60%
+RISK_MAX_GAIN_LONG = 1.00           # 近 20 日累计涨幅上限 100%
 RISK_GAIN_LONG_WINDOW = 20
-RISK_MAX_BIAS = 0.20                # 相对 20 日均线的乖离率上限 20%
+RISK_MAX_BIAS = 0.30                # 相对 20 日均线的乖离率上限 30%
 RISK_BIAS_WINDOW = 20
 
 # --- 已在砸盘：近期出现过跌停 ---
-RISK_MAX_LIMIT_DOWN_COUNT = 0       # 近 RISK_LIMIT_DOWN_WINDOW 日允许的跌停次数
+RISK_MAX_LIMIT_DOWN_COUNT = 1       # 近 RISK_LIMIT_DOWN_WINDOW 日允许的跌停次数
 RISK_LIMIT_DOWN_WINDOW = 60
 
 # --- 波动 ---
-RISK_MAX_AMPLITUDE = 0.09           # 近 5 日平均振幅上限 9%
+RISK_MAX_AMPLITUDE = 0.12           # 近 5 日平均振幅上限 12%
 RISK_AMPLITUDE_WINDOW = 5
-RISK_MAX_VOLATILITY = 0.80          # 近 20 日收益率的年化波动率上限 80%
+RISK_MAX_VOLATILITY = 1.20          # 近 20 日收益率的年化波动率上限 120%
 RISK_VOLATILITY_WINDOW = 20
 
 # --- 资金异动与流动性 ---
-RISK_MAX_VOLUME_RATIO = 3.0         # 量比（最新量 / 近 5 日均量）上限
+RISK_MAX_VOLUME_RATIO = 5.0         # 量比（最新量 / 近 5 日均量）上限
 RISK_VOLUME_WINDOW = 5
-RISK_MAX_TURNOVER = 0.25            # 换手率上限 25%（需要流通股本，取不到则跳过）
-RISK_MIN_AMOUNT = 5e7               # 近 5 日日均成交额下限 5000 万
+RISK_MAX_TURNOVER = 0.40            # 换手率上限 40%（需要流通股本，取不到则跳过）
+RISK_MIN_AMOUNT = 5e7               # 近 5 日日均成交额下限 5000 万【硬否决】
 RISK_AMOUNT_WINDOW = 5
 
 # --- 结构 ---
-RISK_MIN_LISTED_DAYS = 120          # 上市不足 120 个自然日的次新股不碰
+RISK_MIN_LISTED_DAYS = 90           # 上市不足 90 个自然日的次新股不碰【硬否决】
 
 # --- 当日开盘（09:31 可观测）---
-RISK_MAX_GAP_UP = 0.05              # 高开超过 5% 不追
-RISK_MAX_GAP_DOWN = 0.05            # 低开超过 5% 不接
+RISK_MAX_GAP_UP = 0.07              # 高开超过 7% 不追
+RISK_MAX_GAP_DOWN = 0.07            # 低开超过 7% 不接
 
 # ============================================================
 # 分钟线风控（momentum_timing/intraday.py）
@@ -166,16 +210,16 @@ INTRADAY_MAX_FAILED_LIMIT_UP = 0        # 炸板（摸到涨停没封住）次数上限
 INTRADAY_MAX_LIMIT_DOWN_TOUCH = 0       # 盘中触及跌停次数上限
 
 # --- 最近一个交易日的日内结构 ---
-INTRADAY_MIN_TAIL_RETURN = -0.03        # 尾盘 30 分钟跌幅下限 -3%
-INTRADAY_MIN_CLOSE_POSITION = 0.20      # 收盘价在当日振幅区间中的最低位置
-INTRADAY_MIN_VWAP_GAP = -0.015          # 收盘价相对 VWAP 的最低偏离 -1.5%
-INTRADAY_MAX_DRAWDOWN = -0.07           # 日内最大回撤下限 -7%
+INTRADAY_MIN_TAIL_RETURN = -0.04        # 尾盘 30 分钟跌幅下限 -4%
+INTRADAY_MIN_CLOSE_POSITION = 0.15      # 收盘价在当日振幅区间中的最低位置
+INTRADAY_MIN_VWAP_GAP = -0.025          # 收盘价相对 VWAP 的最低偏离 -2.5%
+INTRADAY_MAX_DRAWDOWN = -0.10           # 日内最大回撤下限 -10%
 
 # --- 成交金额分布 ---
-INTRADAY_MAX_DOWN_AMOUNT_RATIO = 0.60   # 下跌分钟成交额占比上限（抛压主导）
-INTRADAY_MAX_TAIL_AMOUNT_RATIO = 0.35   # 尾盘成交额占比上限（配合尾盘下跌才否决）
-INTRADAY_MAX_POST_HIGH_AMOUNT_RATIO = 0.65  # 日内最高点之后的成交额占比上限
-INTRADAY_MAX_AMOUNT_SPIKE = 3.0         # 最近一日成交额 / 前几日均额（天量滞涨）
+INTRADAY_MAX_DOWN_AMOUNT_RATIO = 0.70   # 下跌分钟成交额占比上限（抛压主导）
+INTRADAY_MAX_TAIL_AMOUNT_RATIO = 0.45   # 尾盘成交额占比上限（配合尾盘下跌才否决）
+INTRADAY_MAX_POST_HIGH_AMOUNT_RATIO = 0.75  # 日内最高点之后的成交额占比上限
+INTRADAY_MAX_AMOUNT_SPIKE = 5.0         # 最近一日成交额 / 前几日均额（天量滞涨）
 
 # ============================================================
 # 大盘风控
@@ -212,6 +256,58 @@ LOT_SIZE = 100             # 一手股数
 # ============================================================
 # 前 WARMUP_BARS 根 K 线数据不足，不做任何交易
 WARMUP_BARS = LOOKBACK_DAYS + 10
+
+
+# ============================================================
+# 风控档位（放在最后统一覆盖上面的阈值）
+# ============================================================
+# 'normal' 默认；'loose' 只保留硬否决类规则，软规则基本不拦；
+# 'strict' 回到"命中任何一条就否决"的严格口径（容易天天空仓，调参时用来对照）
+RISK_PRESET = 'normal'
+
+if RISK_PRESET == 'loose':
+    RISK_PENALTY_LIMIT = 8
+    RISK_MAX_CANDIDATES = 50
+    RISK_MAX_GAIN_SHORT = 0.60
+    RISK_MAX_GAIN_LONG = 1.50
+    RISK_MAX_BIAS = 0.45
+    RISK_MAX_LIMIT_UP_COUNT = 5
+    RISK_MAX_VOLUME_RATIO = 8.0
+    RISK_MAX_TURNOVER = 0.60
+    RISK_MAX_VOLATILITY = 1.80
+    RISK_MAX_AMPLITUDE = 0.16
+    RISK_MAX_GAP_UP = 0.09
+    RISK_MAX_GAP_DOWN = 0.09
+    INTRADAY_MIN_TAIL_RETURN = -0.06
+    INTRADAY_MIN_CLOSE_POSITION = 0.10
+    INTRADAY_MIN_VWAP_GAP = -0.04
+    INTRADAY_MAX_DRAWDOWN = -0.14
+    INTRADAY_MAX_DOWN_AMOUNT_RATIO = 0.80
+    INTRADAY_MAX_AMOUNT_SPIKE = 8.0
+
+elif RISK_PRESET == 'strict':
+    RISK_PENALTY_LIMIT = 1
+    RISK_MAX_CANDIDATES = 10
+    RISK_MAX_GAIN_SHORT = 0.25
+    RISK_MAX_GAIN_LONG = 0.60
+    RISK_MAX_BIAS = 0.20
+    RISK_MAX_LIMIT_UP_COUNT = 2
+    RISK_MAX_LIMIT_DOWN_COUNT = 0
+    RISK_MAX_VOLUME_RATIO = 3.0
+    RISK_MAX_TURNOVER = 0.25
+    RISK_MAX_VOLATILITY = 0.80
+    RISK_MAX_AMPLITUDE = 0.09
+    RISK_MAX_GAP_UP = 0.05
+    RISK_MAX_GAP_DOWN = 0.05
+    RISK_MIN_LISTED_DAYS = 120
+    INTRADAY_MIN_TAIL_RETURN = -0.03
+    INTRADAY_MIN_CLOSE_POSITION = 0.20
+    INTRADAY_MIN_VWAP_GAP = -0.015
+    INTRADAY_MAX_DRAWDOWN = -0.07
+    INTRADAY_MAX_DOWN_AMOUNT_RATIO = 0.60
+    INTRADAY_MAX_TAIL_AMOUNT_RATIO = 0.35
+    INTRADAY_MAX_POST_HIGH_AMOUNT_RATIO = 0.65
+    INTRADAY_MAX_AMOUNT_SPIKE = 3.0
 
 # ==========================================================
 # momentum_timing/indicators.py
@@ -690,22 +786,69 @@ class RiskParams(object):
             setattr(self, key, value)
 
 
-class RiskResult(object):
-    """风控结论：是否通过、否决原因、各项指标（用于日志与复盘）。"""
+def rule_penalty(reason, weights=None, default=None):
+    """单条软规则的扣分。"""
+    weights = RISK_RULE_PENALTY if weights is None else weights
+    default = RISK_DEFAULT_PENALTY if default is None else default
+    return weights.get(reason, default)
 
-    def __init__(self, passed, reasons=None, metrics=None):
-        self.passed = passed
-        self.reasons = reasons or []
-        self.metrics = metrics or {}
+
+class RiskResult(object):
+    """
+    风控结论。
+
+    判定分两层，避免"二十条规则全用命中即否决"导致谁都过不了：
+      硬否决  命中 RISK_HARD_RULES 里的任意一条 -> 直接出局
+      扣分制  其余规则各自扣分，累计 >= RISK_PENALTY_LIMIT 才出局
+
+    passed 显式传入时以传入值为准（构造已知结论的场景）；
+    调用 add() 追加原因后一律按上面的规则重新判定。
+    """
+
+    def __init__(self, passed=None, reasons=None, metrics=None,
+                 hard_rules=None, weights=None, limit=None, default_penalty=None):
+        self.hard_rules = RISK_HARD_RULES if hard_rules is None else hard_rules
+        self.weights = RISK_RULE_PENALTY if weights is None else weights
+        self.limit = RISK_PENALTY_LIMIT if limit is None else limit
+        self.default_penalty = (RISK_DEFAULT_PENALTY if default_penalty is None
+                                else default_penalty)
+        self.reasons = list(reasons or [])
+        self.metrics = dict(metrics or {})
+
+        self.recompute()
+        if passed is not None:
+            self.passed = passed
+
+    def recompute(self):
+        """按硬否决 + 扣分重新判定。"""
+        self.hard = [r for r in self.reasons if r in self.hard_rules]
+        self.penalty = sum(rule_penalty(r, self.weights, self.default_penalty)
+                           for r in self.reasons if r not in self.hard_rules)
+        self.passed = not self.hard and self.penalty < self.limit
+        return self.passed
+
+    def add(self, reasons=None, metrics=None):
+        """追加否决原因与指标（例如把分钟线的结论并进来），并重新判定。"""
+        for reason in reasons or []:
+            if reason not in self.reasons:
+                self.reasons.append(reason)
+        if metrics:
+            self.metrics.update(metrics)
+        return self.recompute()
 
     def __repr__(self):
-        return 'RiskResult(passed=%s, reasons=%s)' % (self.passed, self.reasons)
+        return ('RiskResult(passed=%s, penalty=%s, reasons=%s)'
+                % (self.passed, self.penalty, self.reasons))
 
     def describe(self):
         """给日志用的一行说明。"""
         if self.passed:
-            return 'PASS'
-        return 'REJECT(%s)' % ','.join(self.reasons)
+            return 'PASS' if not self.reasons else 'PASS(扣分%d/%d: %s)' % (
+                self.penalty, self.limit, ','.join(self.reasons))
+        if self.hard:
+            return 'REJECT[硬否决: %s]' % ','.join(self.hard)
+        return 'REJECT[扣分%d>=%d: %s]' % (
+            self.penalty, self.limit, ','.join(self.reasons))
 
 
 # ============================================================
@@ -771,7 +914,7 @@ def evaluate_candidate(stock, history, today=None, params=None, listed_days=None
 
     if len(closes) < 2 or len(pre_closes) < 2:
         reasons.append('data_insufficient')
-        return RiskResult(False, reasons, metrics)
+        return RiskResult(reasons=reasons, metrics=metrics)
 
     # ---------- 过热：连板 / 涨停次数 / 累计涨幅 / 乖离 ----------
     streak = consecutive_limit_up(stock, closes, pre_closes)
@@ -857,7 +1000,7 @@ def evaluate_candidate(stock, history, today=None, params=None, listed_days=None
         if params.max_gap_down is not None and gap < -abs(params.max_gap_down):
             reasons.append('gap_down')
 
-    return RiskResult(not reasons, reasons, metrics)
+    return RiskResult(reasons=reasons, metrics=metrics)
 
 
 def market_is_healthy(index_closes, ma_window):
@@ -892,6 +1035,27 @@ def pick_first_passing(ranked, evaluator, max_candidates=None):
             return stock, result, rejected
         rejected.append((stock, result))
     return None, None, rejected
+
+
+def best_of_rejected(rejected):
+    """
+    全部被否决时，挑扣分最低且没有硬否决的那只。
+
+    给 RISK_FALLBACK_TO_BEST 用；没有可选的返回 (None, None)。
+    """
+    candidates = [(stock, result) for stock, result in rejected if not result.hard]
+    if not candidates:
+        return None, None
+    return min(candidates, key=lambda item: item[1].penalty)
+
+
+def reason_counts(rejected):
+    """把否决原因汇总成 {原因: 次数}，用于定位"是哪条规则把票全拦了"。"""
+    counts = {}
+    for _stock, result in rejected:
+        for reason in result.reasons:
+            counts[reason] = counts.get(reason, 0) + 1
+    return counts
 
 # ==========================================================
 # momentum_timing/intraday.py
@@ -1657,8 +1821,9 @@ def init(C):
     print('  板块数: %d' % len(CONCEPT_SECTORS))
     print('  动量回看: %d天, 连降卖出: %d天, 止损线: %.0f%%'
           % (LOOKBACK_DAYS, DECLINE_DAYS_TO_SELL, STOP_LOSS_RATIO * 100))
-    print('  风控: %s (候选顺延 %d 只, 需要 %d 根历史K线)'
-          % ('开' if RISK_ENABLED else '关', RISK_MAX_CANDIDATES, g.risk_bars))
+    print('  风控: %s 档位=%s 候选顺延 %d 只, 扣分上限 %d, 需要 %d 根历史K线'
+          % ('开' if RISK_ENABLED else '关', RISK_PRESET, RISK_MAX_CANDIDATES,
+             RISK_PENALTY_LIMIT, g.risk_bars))
     print('  分钟线风控: %s (回看 %d 个交易日, 取 %d 根1分钟K线)'
           % ('开' if INTRADAY_ENABLED else '关', INTRADAY_DAYS, g.intraday_bars))
     print('  大盘风控: %s (%s 跌破 MA%d -> %s)'
@@ -2011,11 +2176,39 @@ def select_target(pool, C, bar_date):
     target, result, rejected = pick_first_passing(candidates, evaluator, RISK_MAX_CANDIDATES)
 
     for stock, rejected_result in rejected:
-        print('[风控] %s %s %s' % (stock, C.get_stock_name(stock), rejected_result.describe()))
+        print('[风控] %s %s %s' % (stock, C.get_stock_name(stock),
+                                   rejected_result.describe()))
+        if RISK_DEBUG:
+            print('[风控明细] %s %s' % (stock, format_metrics(rejected_result.metrics)))
         for reason in rejected_result.reasons:
             g.reject_stats[reason] = g.reject_stats.get(reason, 0) + 1
 
+    if target is None and rejected:
+        # 今天一只都没过：把原因汇总打出来，方便定位是哪条规则拦死了全场
+        counts = sorted(reason_counts(rejected).items(), key=lambda kv: kv[1], reverse=True)
+        print('[风控] %d 只候选全部否决，原因分布: %s' % (len(rejected), counts))
+
+        if RISK_FALLBACK_TO_BEST:
+            target, result = best_of_rejected(rejected)
+            if target is not None:
+                print('[风控] 兜底买入扣分最低的 %s %s' % (target, result.describe()))
+
+    if target is not None and RISK_DEBUG and result is not None:
+        print('[风控明细] %s %s' % (target, format_metrics(result.metrics)))
+
     return target, result
+
+
+def format_metrics(metrics):
+    """把风控指标格式化成一行，便于按真实数据校准阈值（RISK_DEBUG=True 时打印）。"""
+    parts = []
+    for key in sorted(metrics):
+        value = metrics[key]
+        if isinstance(value, float):
+            parts.append('%s=%.4g' % (key, value))
+        else:
+            parts.append('%s=%s' % (key, value))
+    return ' '.join(parts)
 
 
 def check_risk(stock, C, bar_date, risk_data, score=None, minute_cache=None):
@@ -2054,9 +2247,7 @@ def check_risk(stock, C, bar_date, risk_data, score=None, minute_cache=None):
     # 日线就没过的候选不必再拉分钟线（分钟数据量大，能省则省）
     if INTRADAY_ENABLED and result.passed:
         reasons, metrics = check_intraday(stock, C, bar_date, minute_cache)
-        result.reasons.extend(reasons)
-        result.metrics.update(metrics)
-        result.passed = not result.reasons
+        result.add(reasons, metrics)
 
     return result
 
