@@ -14,3 +14,5 @@ dist/
 # 回测输出与本地数据
 backtests/
 data/
+# 历史成分股缓存是回测的输入，必须进版本库（否则回测无法复现）
+!data/hs300_constituents.csv

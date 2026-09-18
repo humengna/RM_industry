@@ -32,9 +32,15 @@ momentum_timing/          纯计算内核（只依赖标准库，可单元测试
 qmt/
 └── strategy_backtest.py  QMT 回测脚本：init / handlebar / stop + 取数 + 下单
 tools/
+<<<<<<< HEAD
 └── bundle_qmt.py         打包成单文件，方便直接贴进 QMT 客户端
 single_file/              生成好的单文件（UTF-8 / GBK 两版），复制即用
 tests/                    275 个单元测试 + 模拟 QMT / xtdata 环境的端到端测试
+=======
+├── bundle_qmt.py         打包成单文件，方便直接贴进 QMT 客户端
+└── import_constituents_xlsx.py  Excel 历史成分股 -> 回测缓存 CSV
+tests/                    290 个单元测试 + 模拟 QMT 环境的端到端测试
+>>>>>>> claude/happy-bell-nuwx17
 reference/                原始脚本存档
 ```
 
@@ -77,7 +83,7 @@ PROJECT_ROOT = r'D:\quant\RM_industry'
 
 ```bash
 pip install -r requirements-dev.txt
-python -m pytest            # 275 passed
+python -m pytest            # 290 passed
 ```
 
 测试不需要 QMT：`tests/fake_qmt.py` 模拟了 `ContextInfo`、`passorder`、
