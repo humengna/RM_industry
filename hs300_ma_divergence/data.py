@@ -218,11 +218,68 @@ class MarketData(object):
 
         return result
 
-    def trading_days(self, index_code, start, end):
-        """用指数日线当交易日历。"""
+    def calendar_from_api(self, start, end):
+        """
+        优先用 xtdata 的交易日历接口，它不依赖本地已下载的行情。
+
+        不同版本的 xtquant 接口签名和返回值不一样（毫秒时间戳或日期字符串），
+        这里都兼容；接口不存在或取不到就返回 []，由调用方退回指数日线。
+        """
+        getter = getattr(self.xt, 'get_trading_dates', None)
+        if getter is None:
+            return []
+
+        start, end = str(start)[:8], str(end)[:8]
+        for market in ('SH', 'SZ'):
+            raw = None
+            for call in (lambda: getter(market, start, end),
+                         lambda: getter(market, start_time=start, end_time=end)):
+                try:
+                    raw = call()
+                    break
+                except TypeError:
+                    continue
+                except Exception as e:
+                    print('[日历] get_trading_dates(%s) 失败: %s' % (market, e))
+                    break
+
+            days = set()
+            for item in raw or []:
+                if isinstance(item, (int, float)):
+                    day = _timetag_to_date(item)
+                else:
+                    text = str(item)[:8]
+                    day = text if text.isdigit() else ''
+                if day and start <= day <= end:
+                    days.add(day)
+
+            if days:
+                return sorted(days)
+
+        return []
+
+    def trading_days(self, index_code, start, end, download_if_missing=False):
+        """
+        交易日历：先用 xtdata 的日历接口，取不到再退回指数日线。
+
+        download_if_missing=True 时会自动补下载指数日线，
+        方便在本地数据目录还是空的时候直接用。
+        """
+        days = self.calendar_from_api(start, end)
+        if days:
+            return days
+
         bars = self.get_bars([index_code], start, end)
+        if index_code not in bars and download_if_missing:
+            print('[日历] 本地没有 %s 的日线，正在补下载' % index_code)
+            self.download([index_code], start, end)
+            bars = self.get_bars([index_code], start, end)
+
         if index_code not in bars:
             raise ValueError(
-                '取不到 %s 的日线，无法构建交易日历。先用 --download 补下载数据，'
-                '并确认 QMT / MiniQMT 客户端已登录' % index_code)
+                '取不到 %s 的日线，无法构建交易日历。\n'
+                '  * 首次使用请加 --download，会自动补下载指数与成分股行情；\n'
+                '  * 或在 QMT / MiniQMT 客户端里手动补充 %s 的日线数据；\n'
+                '  * 也确认一下客户端已登录、xtdata 数据路径指向的是同一个目录。'
+                % (index_code, index_code))
         return list(bars[index_code].dates)

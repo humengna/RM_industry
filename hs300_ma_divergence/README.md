@@ -38,12 +38,13 @@ xtdata 的数据由本机 QMT / MiniQMT 客户端提供，所以需要：
 
 ```bash
 # 首次：补下载行情（指数 + 区间内出现过的全部成分股）
+# 本地数据目录是空的时候必须加 --download，否则连交易日历都建不起来
 python -m hs300_ma_divergence --start 20230101 --end 20241231 --download
 
 # 之后直接回测，读本地数据
 python -m hs300_ma_divergence --start 20230101 --end 20241231
 
-# 只抓历史成分股写缓存
+# 只抓历史成分股写缓存（需要的指数日线会自动补下载）
 python -m hs300_ma_divergence --start 20200101 --end 20241231 --dump-constituents
 ```
 
@@ -95,6 +96,12 @@ date,stock
 每个"快照日"把当时的全部成分股各写一行，放到 `--cache` 指定的路径即可。
 不需要每个交易日都有，程序会用不晚于当日的最近一个快照前向填充
 （沪深300 每年 6/12 月各调整一次，半年一个快照就够）。
+
+## 交易日历
+
+优先用 `xtdata.get_trading_dates()`（不依赖本地已下载的行情）；
+旧版 xtquant 没有这个接口时，退回用 `000300.SH` 的日线当日历，
+本地没有就自动补下载。
 
 ## 撮合假设
 

@@ -79,12 +79,25 @@ class FakeXtdata(object):
     sectors:  {板块: [(生效日 'YYYYMMDD', [股票])]}，按时间点返回不同成分
     """
 
-    def __init__(self, bars, sectors=None, sector_supports_timetag=True):
-        self.bars = bars
+    def __init__(self, bars, sectors=None, sector_supports_timetag=True,
+                 pending_bars=None, trading_dates=None):
+        self.bars = dict(bars)
         self.sectors = sectors or {}
         self.sector_supports_timetag = sector_supports_timetag
+        # 还没下载到本地的数据：download 之后才出现，模拟空的数据目录
+        self.pending_bars = dict(pending_bars or {})
+        # None 表示这个版本的 xtquant 没有 get_trading_dates
+        self._trading_dates = trading_dates
+        if trading_dates is None:
+            self.get_trading_dates = None
         self.downloaded = []
         self.market_data_calls = []
+
+    def get_trading_dates(self, market, start_time='', end_time='', count=-1):
+        days = [d for d in (self._trading_dates or [])
+                if (not start_time or d >= str(start_time)[:8])
+                and (not end_time or d <= str(end_time)[:8])]
+        return [self._timetag(d) for d in days]
 
     # ---------- 行情 ----------
 
@@ -151,4 +164,7 @@ class FakeXtdata(object):
     def download_history_data2(self, stock_list, period='1d', start_time='', end_time='',
                                callback=None):
         self.downloaded.extend(stock_list)
+        for stock in stock_list:
+            if stock in self.pending_bars:
+                self.bars[stock] = self.pending_bars.pop(stock)
         return len(stock_list)

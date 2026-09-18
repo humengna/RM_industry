@@ -34,7 +34,7 @@ qmt/
 tools/
 └── bundle_qmt.py         打包成单文件，方便直接贴进 QMT 客户端
 single_file/              生成好的单文件（UTF-8 / GBK 两版），复制即用
-tests/                    270 个单元测试 + 模拟 QMT / xtdata 环境的端到端测试
+tests/                    275 个单元测试 + 模拟 QMT / xtdata 环境的端到端测试
 reference/                原始脚本存档
 ```
 
@@ -77,7 +77,7 @@ PROJECT_ROOT = r'D:\quant\RM_industry'
 
 ```bash
 pip install -r requirements-dev.txt
-python -m pytest            # 270 passed
+python -m pytest            # 275 passed
 ```
 
 测试不需要 QMT：`tests/fake_qmt.py` 模拟了 `ContextInfo`、`passorder`、
