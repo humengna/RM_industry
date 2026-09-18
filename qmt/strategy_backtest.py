@@ -1,7 +1,8 @@
 # coding: utf-8
 """
-A股股票策略 [回测版]：热门概念池 + 对数线性回归动量打分 + RSRS修正标准分大盘择时
-                       + 动量分数连续下降个股择时 + 固定 -15% 硬止损
+A股股票策略 [回测版]：概念/全市场池 + 对数线性回归动量打分 + 风控过滤
+                       + RSRS / 均线大盘择时 + 动量分数连续下降个股择时
+                       + 移动止损 + 固定 -15% 硬止损
 
 与实盘版的主要区别：
   1. 使用 handlebar 逐K线驱动，替代 run_time 定时任务
@@ -51,18 +52,24 @@ def _bootstrap_sys_path():
 _bootstrap_sys_path()
 
 from momentum_timing.config import (
-    ACCOUNT_TYPE, BACKTEST_ACCOUNT, CONCEPT_SECTORS, DECLINE_DAYS_TO_SELL,
-    LOOKBACK_DAYS, MAX_MARKET_CAP, MIN_MARKET_CAP, RSRS_ENABLED, RSRS_INDEX,
-    RSRS_M, RSRS_N, SCORE_HISTORY_DAYS, STOP_LOSS_RATIO, STRATEGY_NAME,
-    TRADING_DAYS_PER_YEAR, WARMUP_BARS,
+    ACCOUNT_TYPE, BACKTEST_ACCOUNT, ASSUME_LIMIT_DOWN_UNSELLABLE, CONCEPT_SECTORS,
+    DECLINE_DAYS_TO_SELL, LOOKBACK_DAYS, MARKET_FILTER_ACTION, MARKET_FILTER_ENABLED,
+    MARKET_INDEX, MARKET_MA_WINDOW, MAX_MARKET_CAP, MIN_MARKET_CAP, RISK_ENABLED,
+    RISK_MAX_CANDIDATES, RSRS_ENABLED, RSRS_INDEX, RSRS_M, RSRS_N, SCORE_HISTORY_DAYS,
+    STOP_LOSS_RATIO, STRATEGY_NAME, TRADING_DAYS_PER_YEAR, TRAILING_STOP_RATIO,
+    WARMUP_BARS,
 )
 from momentum_timing.indicators import rsrs_corrected_zscore
-from momentum_timing.portfolio import buy_volume, can_buy
+from momentum_timing.portfolio import buy_volume, can_buy, can_sell
+from momentum_timing.risk import (
+    RiskParams, RiskResult, evaluate_candidate, history_bars_needed,
+    market_is_healthy, pick_first_passing,
+)
 from momentum_timing.scoring import (
     bars_needed_for_history, bars_needed_for_rank, momentum_score_history, rank_pool,
 )
 from momentum_timing.signals import (
-    SIGNAL_KEEP, SIGNAL_SELL, profit_ratio, stop_loss_triggered, timing_signal,
+    SIGNAL_BUY, SIGNAL_KEEP, SIGNAL_SELL, exit_reason, profit_ratio, timing_signal,
 )
 from momentum_timing.universe import limit_prices, passes_filters
 # --BUNDLE-STRIP-END--
@@ -76,6 +83,9 @@ OP_SELL = 24              # 股票卖出
 ORDER_BY_VOLUME = 1101    # 按股数下单
 PRICE_TYPE_MARKET = 5     # 市价（最优五档剩余撤销）
 PRICE_TYPE_LIMIT = 11     # 指定价
+
+# 风控取数用到的字段
+RISK_FIELDS = ['open', 'high', 'low', 'close', 'preClose', 'volume', 'amount']
 
 
 # ============================================================
@@ -99,20 +109,34 @@ def init(C):
     g.score_history = {}      # {股票: 近 N 日动量分数序列}
     g.today_target = None     # 今日目标股票
     g.bar_count = 0           # 已处理 bar 计数
+    g.risk_params = RiskParams()
+    g.risk_bars = history_bars_needed(g.risk_params)
+    g.position_peak = {}      # {股票: 持仓期间最高价}，用于移动止损
+    g.reject_stats = {}       # {否决原因: 次数}，回测结束时汇总
 
     print('[动量择时策略-回测版] 初始化完成')
     print('  回测账号: %s, 类型: %s' % (g.account, g.acct_type))
     print('  板块数: %d' % len(CONCEPT_SECTORS))
     print('  动量回看: %d天, 连降卖出: %d天, 止损线: %.0f%%'
           % (LOOKBACK_DAYS, DECLINE_DAYS_TO_SELL, STOP_LOSS_RATIO * 100))
+    print('  风控: %s (候选顺延 %d 只, 需要 %d 根历史K线)'
+          % ('开' if RISK_ENABLED else '关', RISK_MAX_CANDIDATES, g.risk_bars))
+    print('  大盘风控: %s (%s 跌破 MA%d -> %s)'
+          % ('开' if MARKET_FILTER_ENABLED else '关', MARKET_INDEX,
+             MARKET_MA_WINDOW, MARKET_FILTER_ACTION))
+    print('  移动止损: %s' % ('%.0f%%' % (TRAILING_STOP_RATIO * 100)
+                              if TRAILING_STOP_RATIO else '关'))
 
 
 def handlebar(C):
     """
     每根日K线触发一次，模拟完整交易日流程：
-      ① 选股 + 动量打分 + 择时 + 调仓（等价于 09:31 my_trade）
-      ② 止损检查（等价于 14:50 check_lose，回测用当日收盘价）
-      ③ 打印复盘（等价于 15:05 print_trade_info）
+      ① 大盘风控
+      ② 选股 + 动量打分 + 个股风控 + 择时 + 调仓（等价于 09:31 my_trade）
+      ③ 持仓风控：硬止损 + 移动止损（等价于 14:50 check_lose）
+      ④ 打印复盘（等价于 15:05 print_trade_info）
+
+    注意：无论今天是否选出标的，③ 持仓风控都会执行——空仓日也要保护已有持仓。
     """
     g.bar_count += 1
 
@@ -126,20 +150,45 @@ def handlebar(C):
     print('[回测] Bar#%d 日期: %s' % (g.bar_count, bar_date))
     print('=' * 60)
 
-    # ---------------- ① 选股 + 调仓 ----------------
+    update_position_peaks(C, bar_date)
+
+    # ---------------- ① 大盘风控 ----------------
+    market_ok = check_market(C, bar_date)
+    if not market_ok and MARKET_FILTER_ACTION == 'exit_all':
+        print('[回测] 大盘走弱 -> 清仓离场')
+        close_all_positions(C, bar_date, '大盘风控清仓')
+        print_trade_info_backtest(C, bar_date)
+        return
+
+    # ---------------- ② 选股 + 调仓 ----------------
+    target_stock = trade_once(C, bar_date, market_ok)
+
+    # ---------------- ③ 持仓风控 ----------------
+    check_lose_backtest(C, bar_date)
+
+    # ---------------- ④ 复盘打印 ----------------
+    print_trade_info_backtest(C, bar_date)
+
+    return target_stock
+
+
+def trade_once(C, bar_date, market_ok=True):
+    """当日选股与调仓，返回最终的目标股票（没有则 None）。"""
     # 步骤1：构建股票池
     pool = get_stock_pool(C, bar_date)
     if not pool:
-        print('[回测] 股票池为空，跳过今日')
-        return
+        print('[回测] 步骤1 - 股票池为空，今日不开新仓')
+        return None
     print('[回测] 步骤1 - 股票池: %d 只' % len(pool))
 
-    # 步骤2：动量打分选股，取第1名
-    target_stock = get_rank(pool, C, bar_date)
+    # 步骤2：动量打分 + 风控，沿排名顺延取第一只通过的
+    target_stock, risk_result = select_target(pool, C, bar_date)
     if target_stock is None:
-        print('[回测] 步骤2 - 未选出目标股票')
-        return
-    print('[回测] 步骤2 - 目标: %s %s' % (target_stock, C.get_stock_name(target_stock)))
+        print('[回测] 步骤2 - 没有通过风控的候选股，今日不开新仓')
+        return None
+    print('[回测] 步骤2 - 目标: %s %s 风控:%s'
+          % (target_stock, C.get_stock_name(target_stock),
+             risk_result.describe() if risk_result else 'SKIP'))
 
     # 步骤3：计算历史动量分数序列
     g.score_history = rank_stock_change(target_stock, C, bar_date)
@@ -150,27 +199,28 @@ def handlebar(C):
     target_stock = filter_target(target_stock, C, bar_date)
     if target_stock is None:
         print('[回测] 步骤4 - 目标股票被过滤')
-        return
+        return None
     g.today_target = target_stock
     print('[回测] 步骤4 - 过滤通过: %s' % target_stock)
 
     # 步骤5：计算综合择时信号
     signal = get_timing_signal(target_stock, C, bar_date)
+    if signal == SIGNAL_BUY and not market_ok:
+        print('[择时] 大盘走弱，买入信号降级为 KEEP')
+        signal = SIGNAL_KEEP
     print('[回测] 步骤5 - 择时信号: %s' % signal)
 
     # 步骤6：执行调仓
     adjust_position(target_stock, signal, C, bar_date)
     print('[回测] 步骤6 - 调仓执行完毕')
-
-    # ---------------- ② 止损检查 ----------------
-    check_lose_backtest(C, bar_date)
-
-    # ---------------- ③ 复盘打印 ----------------
-    print_trade_info_backtest(C, bar_date)
+    return target_stock
 
 
 def stop(C):
     print('[动量择时策略-回测版] 回测结束，共处理 %d 根K线' % g.bar_count)
+    if getattr(g, 'reject_stats', None):
+        items = sorted(g.reject_stats.items(), key=lambda kv: kv[1], reverse=True)
+        print('[风控汇总] 候选股被否决次数: %s' % items)
 
 
 # ============================================================
@@ -217,6 +267,30 @@ def last_value(data, stock, field, default=0.0):
 
 
 # ============================================================
+# 大盘风控
+# ============================================================
+
+def check_market(C, bar_date):
+    """指数收盘价站上 MA(MARKET_MA_WINDOW) 才允许开新仓。"""
+    if not MARKET_FILTER_ENABLED:
+        return True
+
+    data = get_market_data(C, ['close'], [MARKET_INDEX], bar_date, MARKET_MA_WINDOW + 2)
+    closes = series(data, MARKET_INDEX, 'close')
+    if len(closes) < 2:
+        print('[大盘风控] %s 数据不足，按放行处理' % MARKET_INDEX)
+        return True
+
+    # 排除当前 bar，用昨日收盘判断
+    ok, metrics = market_is_healthy(closes[:-1], MARKET_MA_WINDOW)
+    if metrics:
+        print('[大盘风控] %s 收盘:%.2f MA%d:%.2f -> %s'
+              % (MARKET_INDEX, metrics['close'], MARKET_MA_WINDOW, metrics['ma'],
+                 '健康' if ok else '走弱'))
+    return ok
+
+
+# ============================================================
 # 步骤1：构建股票池
 # ============================================================
 
@@ -254,19 +328,7 @@ def get_stock_pool(C, bar_date):
         suspend_flags = series(data, stock, 'suspendFlag')
         suspend_flag = suspend_flags[-1] if suspend_flags else 0
 
-        stock_name = ''
-        total_value = 0.0
-        try:
-            detail = C.get_instrument_detail(stock)
-            if detail:
-                stock_name = detail.get('InstrumentName', '')
-                total_value = detail.get('TotalValue', 0) or 0
-                if total_value <= 0:
-                    total_shares = detail.get('TotalShares', 0) or 0
-                    if total_shares > 0 and last_close > 0:
-                        total_value = total_shares * last_close
-        except Exception:
-            pass
+        stock_name, total_value, _float_volume, _open_date = get_detail(C, stock, last_close)
 
         ok, _reason = passes_filters(
             stock,
@@ -284,18 +346,56 @@ def get_stock_pool(C, bar_date):
     return result
 
 
+def get_detail(C, stock, last_close=0.0):
+    """
+    读取合约基础信息，返回 (名称, 总市值, 流通股本, 上市日期)。
+    任一字段取不到就给默认值，不让异常打断选股。
+    """
+    stock_name, total_value, float_volume, open_date = '', 0.0, None, None
+    try:
+        detail = C.get_instrument_detail(stock)
+        if detail:
+            stock_name = detail.get('InstrumentName', '')
+            total_value = detail.get('TotalValue', 0) or 0
+            if total_value <= 0:
+                total_shares = detail.get('TotalShares', 0) or 0
+                if total_shares > 0 and last_close > 0:
+                    total_value = total_shares * last_close
+            float_volume = detail.get('FloatVolume') or detail.get('FloatVolumn')
+            open_date = detail.get('OpenDate')
+    except Exception:
+        pass
+    return stock_name, total_value, float_volume, open_date
+
+
+def listed_days(open_date, bar_date):
+    """由上市日期与当前日期计算上市天数（自然日）；无法计算返回 None。"""
+    if not open_date:
+        return None
+    try:
+        open_date = str(int(open_date))
+        if len(open_date) != 8 or open_date == '19700101':
+            return None
+        import datetime
+        start = datetime.date(int(open_date[:4]), int(open_date[4:6]), int(open_date[6:8]))
+        today = datetime.date(int(bar_date[:4]), int(bar_date[4:6]), int(bar_date[6:8]))
+        return (today - start).days
+    except (TypeError, ValueError):
+        return None
+
+
 # ============================================================
-# 步骤2：动量打分选股
+# 步骤2：动量打分 + 风控筛选
 # ============================================================
 
-def get_rank(pool, C, bar_date):
-    """对股票池做动量打分并取第 1 名（打分窗口排除当前 bar）。"""
+def rank_candidates(pool, C, bar_date):
+    """对股票池打分并按分数降序排列（打分窗口排除当前 bar）。"""
     if not pool:
-        return None
+        return []
 
     data = get_market_data(C, ['close'], pool, bar_date, bars_needed_for_rank(LOOKBACK_DAYS))
     if not data:
-        return None
+        return []
 
     close_map = {}
     for stock in pool:
@@ -303,12 +403,80 @@ def get_rank(pool, C, bar_date):
         if len(closes) >= LOOKBACK_DAYS + 1:
             close_map[stock] = closes
 
-    ranked = rank_pool(close_map, LOOKBACK_DAYS, TRADING_DAYS_PER_YEAR)
-    if not ranked:
-        return None
+    return rank_pool(close_map, LOOKBACK_DAYS, TRADING_DAYS_PER_YEAR)
 
-    print('[get_rank] Top3: %s' % [(s, round(sc, 4)) for s, sc in ranked[:3]])
-    return ranked[0][0]
+
+def get_rank(pool, C, bar_date):
+    """动量第 1 名（不含风控），保留给需要对照原始逻辑的场景。"""
+    ranked = rank_candidates(pool, C, bar_date)
+    return ranked[0][0] if ranked else None
+
+
+def select_target(pool, C, bar_date):
+    """
+    动量排名 + 风控：从第 1 名开始逐个体检，返回第一只通过的股票。
+
+    返回 (股票, RiskResult)；全部被否决时返回 (None, None)。
+    """
+    ranked = rank_candidates(pool, C, bar_date)
+    if not ranked:
+        return None, None
+
+    print('[选股] Top3: %s' % [(s, round(sc, 4)) for s, sc in ranked[:3]])
+
+    if not RISK_ENABLED:
+        return ranked[0][0], RiskResult(True, [], {'score': ranked[0][1]})
+
+    candidates = ranked[:RISK_MAX_CANDIDATES]
+    scores = dict(candidates)
+    risk_data = get_market_data(C, RISK_FIELDS, [s for s, _ in candidates],
+                                bar_date, g.risk_bars + 1)
+
+    def evaluator(stock):
+        return check_risk(stock, C, bar_date, risk_data, scores.get(stock))
+
+    target, result, rejected = pick_first_passing(candidates, evaluator, RISK_MAX_CANDIDATES)
+
+    for stock, rejected_result in rejected:
+        print('[风控] %s %s %s' % (stock, C.get_stock_name(stock), rejected_result.describe()))
+        for reason in rejected_result.reasons:
+            g.reject_stats[reason] = g.reject_stats.get(reason, 0) + 1
+
+    return target, result
+
+
+def check_risk(stock, C, bar_date, risk_data, score=None):
+    """
+    对单只候选股做风控体检。
+
+    历史序列一律切掉当前 bar；当前 bar 只用开盘价和前收（09:31 可观测）判断跳空。
+    """
+    closes = series(risk_data, stock, 'close')
+    pre_closes = series(risk_data, stock, 'preClose')
+    if len(closes) < 3 or len(pre_closes) < 3:
+        return RiskResult(False, ['data_insufficient'], {'score': score})
+
+    history = {
+        'close': closes[:-1],
+        'pre_close': pre_closes[:-1],
+        'high': series(risk_data, stock, 'high')[:-1],
+        'low': series(risk_data, stock, 'low')[:-1],
+        'volume': series(risk_data, stock, 'volume')[:-1],
+        'amount': series(risk_data, stock, 'amount')[:-1],
+    }
+    opens = series(risk_data, stock, 'open')
+    today = {'open': opens[-1] if opens else None, 'pre_close': pre_closes[-1]}
+
+    _name, _total_value, float_volume, open_date = get_detail(C, stock, closes[-1])
+
+    return evaluate_candidate(
+        stock, history,
+        today=today,
+        params=g.risk_params,
+        listed_days=listed_days(open_date, bar_date),
+        float_volume=float_volume,
+        score=score,
+    )
 
 
 # ============================================================
@@ -446,38 +614,65 @@ def get_positions(C):
     return positions
 
 
-def sell_stock(stock, volume, C, bar_date, msg):
-    """按当日开盘价限价卖出。"""
+def sell_stock(stock, volume, C, bar_date, msg, market_price=False):
+    """
+    卖出。一字跌停（当日最高价 <= 跌停价）时挂单成交不了，直接跳过。
+    """
+    if ASSUME_LIMIT_DOWN_UNSELLABLE:
+        data = get_market_data(C, ['high', 'preClose'], [stock], bar_date, 1)
+        highs = series(data, stock, 'high')
+        pre_closes = series(data, stock, 'preClose')
+        if highs and pre_closes:
+            _, limit_down = limit_prices(stock, pre_closes[-1])
+            ok, _reason = can_sell(highs[-1], limit_down)
+            if not ok:
+                print('[调仓] %s 一字跌停，卖单无法成交，顺延到下一交易日' % stock)
+                return False
+
+    if market_price:
+        passorder(OP_SELL, ORDER_BY_VOLUME, g.account, stock, PRICE_TYPE_MARKET, -1,
+                  volume, STRATEGY_NAME, 1, msg, C)
+        print('[调仓] %s 市价 数量:%d' % (msg, volume))
+        return True
+
     open_price, _, _, _ = get_price_and_limits(stock, C, bar_date)
     if open_price <= 0:
         print('[调仓] %s 取不到价格，改用市价卖出' % stock)
         passorder(OP_SELL, ORDER_BY_VOLUME, g.account, stock, PRICE_TYPE_MARKET, -1,
                   volume, STRATEGY_NAME, 1, msg, C)
-        return
+        return True
+
     print('[调仓] %s 价格:%.2f 数量:%d' % (msg, open_price, volume))
     passorder(OP_SELL, ORDER_BY_VOLUME, g.account, stock, PRICE_TYPE_LIMIT, open_price,
               volume, STRATEGY_NAME, 1, msg, C)
+    return True
+
+
+def close_all_positions(C, bar_date, msg_prefix):
+    """清空所有持仓。"""
+    for stock, volume in get_positions(C).items():
+        sell_stock(stock, volume, C, bar_date, '%s %s' % (msg_prefix, stock))
 
 
 def adjust_position(stock, signal, C, bar_date):
     """
     SELL     -> 清仓
-    BUY/KEEP -> 持仓已是目标股则持有，否则换仓（先卖旧、再满仓买入）
+    BUY      -> 持仓已是目标股则持有，否则换仓（先卖旧、再满仓买入）
+    KEEP     -> 已持有目标股则继续持有，空仓则不开新仓
     """
     positions = get_positions(C)
     print('[调仓] 当前持仓: %s' % positions)
 
     if signal == SIGNAL_SELL:
-        for held, volume in positions.items():
-            sell_stock(held, volume, C, bar_date, 'SELL信号 清仓 %s' % held)
-        return
-
-    if signal == SIGNAL_KEEP and stock not in positions:
-        print('[调仓] KEEP: 不新开仓')
+        close_all_positions(C, bar_date, 'SELL信号 清仓')
         return
 
     if positions.get(stock, 0) > 0:
         print('[调仓] KEEP: 继续持有 %s' % stock)
+        return
+
+    if signal == SIGNAL_KEEP:
+        print('[调仓] KEEP: 不新开仓')
         return
 
     # 换仓：先卖旧
@@ -512,14 +707,35 @@ def adjust_position(stock, signal, C, bar_date):
     print('[调仓] %s 价格:%.2f' % (msg, open_price))
     passorder(OP_BUY, ORDER_BY_VOLUME, g.account, stock, PRICE_TYPE_LIMIT, open_price,
               volume, STRATEGY_NAME, 1, msg, C)
+    g.position_peak[stock] = open_price
 
 
 # ============================================================
-# 止损检查（回测版：用当日收盘价）
+# 持仓风控：硬止损 + 移动止损
 # ============================================================
+
+def update_position_peaks(C, bar_date):
+    """维护每只持仓股的持仓期间最高价（用当日最高价更新），并清掉已平仓的记录。"""
+    positions = get_positions(C)
+    for stock in list(g.position_peak.keys()):
+        if stock not in positions:
+            del g.position_peak[stock]
+
+    for stock in positions:
+        data = get_market_data(C, ['high', 'close'], [stock], bar_date, 1)
+        high = last_value(data, stock, 'high', 0.0)
+        if high <= 0:
+            high = last_value(data, stock, 'close', 0.0)
+        if high > 0:
+            g.position_peak[stock] = max(g.position_peak.get(stock, 0.0), high)
+
 
 def check_lose_backtest(C, bar_date):
-    """当日收盘价跌破成本价 STOP_LOSS_RATIO 则市价清仓。"""
+    """
+    持仓风控（回测用当日收盘价判断）：
+      硬止损   相对成本价跌破 STOP_LOSS_RATIO
+      移动止损 相对持仓期间最高价回撤超过 TRAILING_STOP_RATIO
+    """
     holdings = get_trade_detail_data(g.account, g.acct_type, 'position') or []
 
     for pos in holdings:
@@ -534,15 +750,27 @@ def check_lose_backtest(C, bar_date):
         if current_price <= 0:
             continue
 
-        ratio = profit_ratio(cost_price, current_price)
-        print('[止损检查] %s %s 成本:%.2f 收盘:%.2f 盈亏:%.2f%%'
-              % (stock, C.get_stock_name(stock), cost_price, current_price, ratio * 100))
+        peak = max(g.position_peak.get(stock, 0.0), current_price)
+        g.position_peak[stock] = peak
 
-        if stop_loss_triggered(cost_price, current_price, STOP_LOSS_RATIO):
-            print('[止损检查] %s 触发硬止损，盈亏 %.2f%% <= %.0f%%，强制清仓'
+        ratio = profit_ratio(cost_price, current_price) or 0.0
+        drawdown = (current_price - peak) / peak if peak > 0 else 0.0
+        print('[持仓风控] %s %s 成本:%.2f 收盘:%.2f 盈亏:%.2f%% 最高:%.2f 回撤:%.2f%%'
+              % (stock, C.get_stock_name(stock), cost_price, current_price,
+                 ratio * 100, peak, drawdown * 100))
+
+        reason = exit_reason(cost_price, current_price, peak,
+                             STOP_LOSS_RATIO, TRAILING_STOP_RATIO)
+        if reason == 'hard_stop':
+            print('[持仓风控] %s 触发硬止损，盈亏 %.2f%% <= %.0f%%，强制清仓'
                   % (stock, ratio * 100, STOP_LOSS_RATIO * 100))
-            passorder(OP_SELL, ORDER_BY_VOLUME, g.account, stock, PRICE_TYPE_MARKET, -1,
-                      volume, STRATEGY_NAME, 1, '硬止损平仓 %s' % stock, C)
+            sell_stock(stock, volume, C, bar_date, '硬止损平仓 %s' % stock,
+                       market_price=True)
+        elif reason == 'trailing_stop':
+            print('[持仓风控] %s 触发移动止损，回撤 %.2f%% <= -%.0f%%，清仓'
+                  % (stock, drawdown * 100, TRAILING_STOP_RATIO * 100))
+            sell_stock(stock, volume, C, bar_date, '移动止损平仓 %s' % stock,
+                       market_price=True)
 
 
 # ============================================================

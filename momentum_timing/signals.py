@@ -11,6 +11,7 @@ from .config import (
     RSRS_BUY_THRESHOLD,
     RSRS_ENABLED,
     STOP_LOSS_RATIO,
+    TRAILING_STOP_RATIO,
 )
 
 SIGNAL_BUY = 'BUY'
@@ -79,3 +80,39 @@ def stop_loss_triggered(cost_price, current_price, stop_loss_ratio=STOP_LOSS_RAT
     if ratio is None:
         return False
     return ratio <= stop_loss_ratio
+
+
+def trailing_stop_triggered(peak_price, current_price,
+                            drawdown_ratio=TRAILING_STOP_RATIO):
+    """
+    移动止损：从持仓期间最高价回撤超过 drawdown_ratio 就离场。
+
+    盈利单冲高回落时能比固定 -15% 硬止损更早离场，
+    避免"涨上去又被一路砸到跌停"。drawdown_ratio 为 None 表示关闭。
+    """
+    if drawdown_ratio is None:
+        return False
+    try:
+        peak_price = float(peak_price)
+        current_price = float(current_price)
+    except (TypeError, ValueError):
+        return False
+    if peak_price <= 0 or current_price <= 0:
+        return False
+    return (current_price - peak_price) / peak_price <= -abs(drawdown_ratio)
+
+
+def exit_reason(cost_price, current_price, peak_price=None,
+                stop_loss_ratio=STOP_LOSS_RATIO,
+                trailing_ratio=TRAILING_STOP_RATIO):
+    """
+    持仓是否该离场，返回原因字符串；不需要离场返回 None。
+
+    'hard_stop'     相对成本价跌破 STOP_LOSS_RATIO
+    'trailing_stop' 相对持仓期间最高价回撤超过 TRAILING_STOP_RATIO
+    """
+    if stop_loss_triggered(cost_price, current_price, stop_loss_ratio):
+        return 'hard_stop'
+    if peak_price and trailing_stop_triggered(peak_price, current_price, trailing_ratio):
+        return 'trailing_stop'
+    return None

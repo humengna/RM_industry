@@ -24,7 +24,7 @@ def load_strategy():
 
 
 def make_prices(closes):
-    """由收盘价生成一套 open/low/preClose/suspendFlag 数据。"""
+    """由收盘价生成一套 open/high/low/preClose/volume/amount/suspendFlag 数据。"""
     pre_close = [closes[0]] + closes[:-1]
     return {
         'close': closes,
@@ -32,12 +32,15 @@ def make_prices(closes):
         'high': [round(c * 1.01, 2) for c in closes],
         'low': [round(c * 0.99, 2) for c in closes],
         'preClose': pre_close,
+        'volume': [1000000] * len(closes),
+        'amount': [2e8] * len(closes),
         'suspendFlag': [0] * len(closes),
     }
 
 
 def build_context(**overrides):
-    up = [round(10 * (1.02 ** i), 2) for i in range(N_BARS)]
+    # 温和上涨（+1.5%/日），既能拿第一名又不会被过热风控否决
+    up = [round(10 * (1.015 ** i), 2) for i in range(N_BARS)]
     flat = [10.0] * N_BARS
     down = [round(20 * (0.98 ** i), 2) for i in range(N_BARS)]
 
@@ -48,10 +51,11 @@ def build_context(**overrides):
     }
     prices.update(overrides.get('prices', {}))
 
+    sector = overrides.get('sector', sorted(prices.keys()))
     return FakeContext(
         prices=prices,
         dates=DATES,
-        sectors={'沪深a股': ['600001.SH', '600002.SH', '600003.SH']},
+        sectors={'沪深a股': list(sector)},
         names={'600001.SH': '强势股', '600002.SH': '横盘股', '600003.SH': '弱势股'},
     )
 
@@ -198,11 +202,12 @@ def test_no_buy_when_cash_below_one_lot():
 
 def test_no_buy_when_locked_at_limit_up():
     module = load_strategy()
-    locked = make_prices([round(10 * (1.02 ** i), 2) for i in range(N_BARS)])
+    module.RISK_ENABLED = False  # 单独验证下单环节的一字涨停判断
+    locked = make_prices([round(10 * (1.015 ** i), 2) for i in range(N_BARS)])
     # 最后一根 bar 一字涨停：最低价 = 前收 * 1.1
     locked['low'][-1] = round(locked['preClose'][-1] * 1.1, 2)
     locked['open'][-1] = locked['low'][-1]
-    context = build_context(prices={'600001.SH': locked})
+    context = build_context(prices={'600001.SH': locked}, sector=['600001.SH'])
     broker = FakeBroker(available=100000.0)
     run_bar(module, context, broker)
 
@@ -285,3 +290,215 @@ def test_rsrs_computed_when_history_is_long_enough():
     score = module.calc_rsrs(context, dates[-1] + '150000')
     assert score is not None
     assert isinstance(score, float)
+
+
+# ---------- 风控：候选顺延 ----------
+
+def limit_up_prices(base_days, streak, start=10.0, ratio=0.10):
+    """前面横盘、最后连续涨停的收盘价序列（最后一根是当前 bar，与前一日平)。"""
+    closes = [start] * base_days
+    for _ in range(streak):
+        closes.append(round(closes[-1] * (1 + ratio), 2))
+    closes.append(closes[-1])   # 当前 bar
+    return closes
+
+
+def test_limit_up_streak_candidate_is_rejected_and_next_one_taken():
+    """连板票分数最高，但应被风控否决，改买排名第二的温和上涨票。"""
+    module = load_strategy()
+    hot = make_prices(limit_up_prices(N_BARS - 3, 2))
+    context = build_context(prices={'600004.SH': hot})
+    broker = FakeBroker(available=100000.0)
+    run_bar(module, context, broker)
+
+    assert module.g.today_target == '600001.SH'
+    assert 'limit_up_streak' in module.g.reject_stats
+    buys = [o for o in broker.orders if o['op_type'] == module.OP_BUY]
+    assert len(buys) == 1 and buys[0]['stock'] == '600001.SH'
+
+
+def test_hot_stock_is_top_ranked_without_risk_module():
+    """关掉风控就会买到那只连板票——说明风控确实是拦截点。"""
+    module = load_strategy()
+    module.RISK_ENABLED = False
+    hot = make_prices(limit_up_prices(N_BARS - 3, 2))
+    context = build_context(prices={'600004.SH': hot})
+    broker = FakeBroker(available=100000.0)
+    run_bar(module, context, broker)
+
+    buys = [o for o in broker.orders if o['op_type'] == module.OP_BUY]
+    assert len(buys) == 1 and buys[0]['stock'] == '600004.SH'
+
+
+def test_no_order_when_every_candidate_is_rejected():
+    module = load_strategy()
+    hot = make_prices(limit_up_prices(N_BARS - 3, 2))
+    context = build_context(prices={'600004.SH': hot}, sector=['600004.SH'])
+    broker = FakeBroker(available=100000.0)
+    run_bar(module, context, broker)
+
+    assert broker.orders == []
+    assert module.g.today_target is None
+
+
+def test_downtrend_only_pool_is_not_bought():
+    """全是下跌票时 weak_momentum 会拦住，不再"矮子里拔将军"。"""
+    module = load_strategy()
+    context = build_context(sector=['600002.SH', '600003.SH'])
+    broker = FakeBroker(available=100000.0)
+    run_bar(module, context, broker)
+
+    assert broker.orders == []
+
+
+def test_gap_up_candidate_is_rejected():
+    module = load_strategy()
+    gapped = make_prices([round(10 * (1.015 ** i), 2) for i in range(N_BARS)])
+    gapped['open'][-1] = round(gapped['preClose'][-1] * 1.08, 2)   # 高开 8%
+    context = build_context(prices={'600001.SH': gapped}, sector=['600001.SH'])
+    broker = FakeBroker(available=100000.0)
+    run_bar(module, context, broker)
+
+    assert broker.orders == []
+    assert 'gap_up' in module.g.reject_stats
+
+
+# ---------- 风控：大盘 ----------
+
+def index_prices(closes):
+    return {'close': closes, 'open': closes, 'high': closes, 'low': closes,
+            'preClose': [closes[0]] + closes[:-1]}
+
+
+def test_weak_market_blocks_new_position():
+    module = load_strategy()
+    falling = [round(4000 * (0.995 ** i), 2) for i in range(N_BARS)]
+    context = build_context(prices={module.MARKET_INDEX: index_prices(falling)})
+    broker = FakeBroker(available=100000.0)
+    run_bar(module, context, broker)
+
+    assert [o for o in broker.orders if o['op_type'] == module.OP_BUY] == []
+
+
+def test_strong_market_allows_new_position():
+    module = load_strategy()
+    rising = [round(4000 * (1.002 ** i), 2) for i in range(N_BARS)]
+    context = build_context(prices={module.MARKET_INDEX: index_prices(rising)})
+    broker = FakeBroker(available=100000.0)
+    run_bar(module, context, broker)
+
+    assert [o for o in broker.orders if o['op_type'] == module.OP_BUY]
+
+
+def test_weak_market_exit_all_closes_positions():
+    module = load_strategy()
+    module.MARKET_FILTER_ACTION = 'exit_all'
+    falling = [round(4000 * (0.995 ** i), 2) for i in range(N_BARS)]
+    context = build_context(prices={module.MARKET_INDEX: index_prices(falling)})
+    broker = FakeBroker(available=0.0,
+                        positions=[FakePosition('600001.SH', 1000, 10.0)])
+    run_bar(module, context, broker)
+
+    assert len(broker.orders) == 1
+    assert broker.orders[0]['op_type'] == module.OP_SELL
+    assert '大盘风控' in broker.orders[0]['msg']
+
+
+# ---------- 风控：持仓 ----------
+
+def test_trailing_stop_exits_after_drawdown_from_peak():
+    module = load_strategy()
+    context = build_context()
+    last_close = context.prices['600001.SH']['close'][-1]
+    broker = FakeBroker(available=0.0,
+                        positions=[FakePosition('600001.SH', 500, last_close * 0.9)])
+    install_fake_qmt(module, context, broker)
+    module.init(context)
+    module.g.position_peak['600001.SH'] = last_close * 1.5   # 曾经冲高 50%
+
+    module.check_lose_backtest(context, DATES[-1] + '150000')
+
+    assert len(broker.orders) == 1
+    assert '移动止损' in broker.orders[0]['msg']
+    assert broker.orders[0]['price_type'] == module.PRICE_TYPE_MARKET
+
+
+def test_trailing_stop_not_triggered_on_small_pullback():
+    module = load_strategy()
+    context = build_context()
+    last_close = context.prices['600001.SH']['close'][-1]
+    broker = FakeBroker(available=0.0,
+                        positions=[FakePosition('600001.SH', 500, last_close * 0.9)])
+    install_fake_qmt(module, context, broker)
+    module.init(context)
+    module.g.position_peak['600001.SH'] = last_close * 1.05   # 只回撤 5%
+
+    module.check_lose_backtest(context, DATES[-1] + '150000')
+    assert broker.orders == []
+
+
+def test_position_peak_is_tracked_and_cleaned():
+    module = load_strategy()
+    context = build_context()
+    broker = FakeBroker(available=0.0,
+                        positions=[FakePosition('600001.SH', 500, 10.0)])
+    install_fake_qmt(module, context, broker)
+    module.init(context)
+
+    module.update_position_peaks(context, DATES[-1] + '150000')
+    assert module.g.position_peak['600001.SH'] == context.prices['600001.SH']['high'][-1]
+
+    broker.positions = []
+    module.update_position_peaks(context, DATES[-1] + '150000')
+    assert module.g.position_peak == {}
+
+
+def test_limit_down_locked_position_is_not_sold():
+    module = load_strategy()
+    closes = [round(20 * (0.98 ** i), 2) for i in range(N_BARS)]
+    locked = make_prices(closes)
+    # 当前 bar 一字跌停：最高价 = 前收 * 0.9
+    locked['high'][-1] = round(locked['preClose'][-1] * 0.9, 2)
+    locked['low'][-1] = locked['high'][-1]
+    locked['close'][-1] = locked['high'][-1]
+    context = build_context(prices={'600003.SH': locked})
+    broker = FakeBroker(available=0.0,
+                        positions=[FakePosition('600003.SH', 500, 100.0)])
+    install_fake_qmt(module, context, broker)
+    module.init(context)
+
+    module.check_lose_backtest(context, DATES[-1] + '150000')
+    assert broker.orders == []   # 跌停封死，卖不掉
+
+
+def test_position_risk_runs_even_without_target():
+    """今天没选出标的，也必须给已有持仓做止损检查。"""
+    module = load_strategy()
+    context = build_context(sector=[])       # 股票池为空
+    broker = FakeBroker(available=0.0,
+                        positions=[FakePosition('600003.SH', 500, 100.0)])
+    run_bar(module, context, broker)
+
+    assert len(broker.orders) == 1
+    assert '硬止损' in broker.orders[0]['msg']
+
+
+def test_runs_over_many_bars_without_error():
+    """连续跑多根 K 线：状态（分数序列、持仓最高价、否决统计）不应出问题。"""
+    module = load_strategy()
+    hot = make_prices(limit_up_prices(N_BARS - 3, 2))
+    context = build_context(prices={'600004.SH': hot})
+    broker = FakeBroker(available=100000.0,
+                        positions=[FakePosition('600001.SH', 500, 10.0)])
+    install_fake_qmt(module, context, broker)
+    module.init(context)
+
+    for i in range(module.WARMUP_BARS - 1, N_BARS):
+        context.barpos = i
+        module.g.bar_count = i
+        module.handlebar(context)
+
+    module.stop(context)
+    assert module.g.bar_count == N_BARS
+    assert set(module.g.position_peak) <= {'600001.SH'}
+    assert module.g.reject_stats

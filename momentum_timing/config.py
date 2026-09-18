@@ -76,6 +76,73 @@ STOP_LOSS_RATIO = -0.15    # 硬止损线 -15%
 
 
 # ============================================================
+# 风控模块（momentum_timing/risk.py）
+# ============================================================
+# 动量打分天然偏好"连板 + 垂直拉升"的情绪票，这类票次日最容易一字跌停。
+# 下面的阈值用于在下单前否决过热标的；设为 None 即关闭该项检查。
+RISK_ENABLED = True
+
+# 沿动量排名往下最多试几只候选股（第 1 名被风控否决就看第 2 名）
+RISK_MAX_CANDIDATES = 5
+
+# 动量分数下限：分数 <= 该值说明标的本身没有上涨趋势，不买
+RISK_MIN_SCORE = 0.0
+
+# --- 过热：涨停与连板 ---
+RISK_MAX_CONSECUTIVE_LIMIT_UP = 0   # 允许的连板数上限，0 = 前一日涨停就不碰
+RISK_MAX_LIMIT_UP_COUNT = 2         # 近 RISK_LIMIT_UP_WINDOW 日涨停次数上限
+RISK_LIMIT_UP_WINDOW = 10
+
+# --- 过热：累计涨幅与乖离 ---
+RISK_MAX_GAIN_SHORT = 0.25          # 近 5 日累计涨幅上限 25%
+RISK_GAIN_SHORT_WINDOW = 5
+RISK_MAX_GAIN_LONG = 0.60           # 近 20 日累计涨幅上限 60%
+RISK_GAIN_LONG_WINDOW = 20
+RISK_MAX_BIAS = 0.20                # 相对 20 日均线的乖离率上限 20%
+RISK_BIAS_WINDOW = 20
+
+# --- 已在砸盘：近期出现过跌停 ---
+RISK_MAX_LIMIT_DOWN_COUNT = 0       # 近 RISK_LIMIT_DOWN_WINDOW 日允许的跌停次数
+RISK_LIMIT_DOWN_WINDOW = 60
+
+# --- 波动 ---
+RISK_MAX_AMPLITUDE = 0.09           # 近 5 日平均振幅上限 9%
+RISK_AMPLITUDE_WINDOW = 5
+RISK_MAX_VOLATILITY = 0.80          # 近 20 日收益率的年化波动率上限 80%
+RISK_VOLATILITY_WINDOW = 20
+
+# --- 资金异动与流动性 ---
+RISK_MAX_VOLUME_RATIO = 3.0         # 量比（最新量 / 近 5 日均量）上限
+RISK_VOLUME_WINDOW = 5
+RISK_MAX_TURNOVER = 0.25            # 换手率上限 25%（需要流通股本，取不到则跳过）
+RISK_MIN_AMOUNT = 5e7               # 近 5 日日均成交额下限 5000 万
+RISK_AMOUNT_WINDOW = 5
+
+# --- 结构 ---
+RISK_MIN_LISTED_DAYS = 120          # 上市不足 120 个自然日的次新股不碰
+
+# --- 当日开盘（09:31 可观测）---
+RISK_MAX_GAP_UP = 0.05              # 高开超过 5% 不追
+RISK_MAX_GAP_DOWN = 0.05            # 低开超过 5% 不接
+
+# ============================================================
+# 大盘风控
+# ============================================================
+MARKET_FILTER_ENABLED = True
+MARKET_INDEX = '000300.SH'          # 基准指数
+MARKET_MA_WINDOW = 20               # 指数收盘价跌破该均线视为大盘走弱
+# 大盘走弱时的动作：'no_new' 只是不开新仓，'exit_all' 直接清仓
+MARKET_FILTER_ACTION = 'no_new'
+
+# ============================================================
+# 持仓风控
+# ============================================================
+# 从持仓期间最高价回撤超过该比例就止盈/止损离场，None = 关闭
+TRAILING_STOP_RATIO = 0.10
+# 一字跌停（当日最高价即跌停价）时卖单其实成交不了，回测中跳过该笔卖出
+ASSUME_LIMIT_DOWN_UNSELLABLE = True
+
+# ============================================================
 # 涨跌停与下单
 # ============================================================
 # 代码前缀 -> 涨跌停幅度，未命中的走 DEFAULT_LIMIT_RATIO

@@ -35,3 +35,20 @@ def can_buy(low_price, limit_up):
     if limit_up > 0 and low_price > 0 and low_price >= limit_up:
         return False, 'limit_up_locked'
     return True, ''
+
+
+def can_sell(high_price, limit_down):
+    """
+    是否卖得掉：全天最高价都在跌停价上（一字跌停）时卖单排不上。
+
+    返回 (是否可卖, 原因)。
+    """
+    try:
+        high_price = float(high_price)
+        limit_down = float(limit_down)
+    except (TypeError, ValueError):
+        return True, ''
+
+    if limit_down > 0 and high_price > 0 and high_price <= limit_down:
+        return False, 'limit_down_locked'
+    return True, ''

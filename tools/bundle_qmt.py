@@ -22,6 +22,7 @@ MODULES = [
     'config',
     'indicators',
     'universe',
+    'risk',
     'signals',
     'portfolio',
     'scoring',
@@ -48,13 +49,19 @@ def clean_module_source(source):
     skipping_paren_import = False
 
     for line in lines:
+        stripped_import = skipping_paren_import or RELATIVE_IMPORT.match(line)
+        if stripped_import and ' as ' in line:
+            # 打包后模块被拼在一起，别名不会存在 -> 直接报错而不是产出坏文件
+            raise ValueError(
+                '包内导入不能使用 as 别名（打包后会变成未定义的名字）: %s' % line.strip())
+
         if skipping_paren_import:
             if ')' in line:
                 skipping_paren_import = False
             continue
         if CODING_LINE.match(line):
             continue
-        if RELATIVE_IMPORT.match(line):
+        if stripped_import:
             if '(' in line and ')' not in line:
                 skipping_paren_import = True
             continue

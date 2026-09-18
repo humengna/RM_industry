@@ -1,7 +1,7 @@
 # 动量择时策略（QMT 回测版）
 
-A 股单标的轮动策略：**概念/全市场股票池 → 对数线性回归动量打分 → 取第 1 名 →
-动量分数连续下降择时 + RSRS 大盘择时（默认只记录）→ 满仓换股 → -15% 硬止损**。
+A 股单标的轮动策略：**概念/全市场股票池 → 对数线性回归动量打分 → 风控体检（沿排名顺延）
+→ 动量分数连续下降择时 + 大盘均线/RSRS 择时 → 满仓换股 → 移动止损 + -15% 硬止损**。
 
 策略逻辑与参数来自原始的 QMT 单文件脚本（存档于
 [`reference/original_qmt_backtest.py`](reference/original_qmt_backtest.py)），
@@ -14,14 +14,15 @@ momentum_timing/          纯计算内核（只依赖标准库，可单元测试
 ├── config.py             全部参数，唯一的参数来源
 ├── indicators.py         一元线性回归 / 动量分数 / RSRS 修正标准分
 ├── scoring.py            打分窗口（排除当前 bar）、历史分数序列、排名
-├── signals.py            连续下降择时、RSRS 否决、止损判断
+├── risk.py               风控：过热/波动/流动性/结构指标与否决逻辑、大盘均线
+├── signals.py            连续下降择时、RSRS 否决、硬止损与移动止损
 ├── universe.py           涨跌停价、停牌 / ST / 市值 / 代码前缀过滤
-└── portfolio.py          整手下单量、一字涨停买不进判断
+└── portfolio.py          整手下单量、一字涨停买不进 / 一字跌停卖不掉判断
 qmt/
 └── strategy_backtest.py  QMT 回测脚本：init / handlebar / stop + 取数 + 下单
 tools/
 └── bundle_qmt.py         打包成单文件，方便直接贴进 QMT 客户端
-tests/                    74 个单元测试 + 模拟 QMT 环境的端到端测试
+tests/                    119 个单元测试 + 模拟 QMT 环境的端到端测试
 reference/                原始脚本存档
 ```
 
@@ -54,7 +55,7 @@ PROJECT_ROOT = r'D:\quant\RM_industry'
 
 ```bash
 pip install -r requirements-dev.txt
-python -m pytest            # 74 passed
+python -m pytest            # 119 passed
 ```
 
 测试不需要 QMT：`tests/fake_qmt.py` 模拟了 `ContextInfo`、`passorder`、
@@ -65,14 +66,16 @@ python -m pytest            # 74 passed
 | 步骤 | 做什么 | 代码位置 |
 | --- | --- | --- |
 | 0 | 前 `WARMUP_BARS`(=15) 根 K 线数据不足，直接跳过 | `handlebar` |
-| 1 | 取板块成分股，过滤停牌 / ST / 市值不在 30~500 亿 / 跌停 | `get_stock_pool` + `universe.passes_filters` |
-| 2 | 对每只股票的对数收盘价做线性回归，按 `年化收益率 × R² 绝对值` 打分，取第 1 名 | `get_rank` + `scoring.rank_pool` |
-| 3 | 计算目标股由远及近的 6 个历史动量分数 | `rank_stock_change` + `scoring.momentum_score_history` |
-| 4 | 目标股停牌 / 跌停则放弃 | `filter_target` |
-| 5 | 分数连续下降 ≥ 2 天 → `SELL`，否则 `BUY`；RSRS 只打印 | `get_timing_signal` + `signals.timing_signal` |
-| 6 | `SELL` 清仓；持仓已是目标股则持有；否则先卖旧、再用可用资金整手买入 | `adjust_position` |
-| 7 | 收盘价相对成本跌破 -15% → 市价强制清仓 | `check_lose_backtest` |
-| 8 | 打印当日成交、持仓、资金 | `print_trade_info_backtest` |
+| 1 | 大盘风控：沪深 300 跌破 MA20 则不开新仓（可配置为清仓） | `check_market` + `risk.market_is_healthy` |
+| 2 | 取板块成分股，过滤停牌 / ST / 市值不在 30~500 亿 / 跌停 | `get_stock_pool` + `universe.passes_filters` |
+| 3 | 对每只股票的对数收盘价做线性回归，按 `年化收益率 × R² 绝对值` 打分排序 | `rank_candidates` + `scoring.rank_pool` |
+| 4 | **风控体检**：连板 / 涨幅 / 乖离 / 波动 / 量能 / 次新 / 跳空，第 1 名被否决就顺延看第 2 名 | `select_target` + `risk.evaluate_candidate` |
+| 5 | 计算目标股由远及近的 6 个历史动量分数 | `rank_stock_change` + `scoring.momentum_score_history` |
+| 6 | 目标股停牌 / 跌停则放弃 | `filter_target` |
+| 7 | 分数连续下降 ≥ 2 天 → `SELL`，否则 `BUY`；大盘走弱时 `BUY` 降级为 `KEEP` | `get_timing_signal` + `signals.timing_signal` |
+| 8 | `SELL` 清仓；持仓已是目标股则持有；否则先卖旧、再用可用资金整手买入 | `adjust_position` |
+| 9 | 持仓风控：-15% 硬止损 + 从最高价回撤 10% 移动止损（**每根 K 线都执行**） | `check_lose_backtest` + `signals.exit_reason` |
+| 10 | 打印当日成交、持仓、资金 | `print_trade_info_backtest` |
 
 **避免未来函数**：所有打分窗口都排除当前这根 K 线
 （`closes[-(lookback+1):-1]`），当前 bar 只用于取开盘价下单和收盘价判断止损。
@@ -96,6 +99,16 @@ python -m pytest            # 74 passed
 | `RSRS_INDEX` | `000300.SH` | 大盘择时基准 |
 | `RSRS_ENABLED` | `False` | 保持原逻辑：RSRS 只打印不介入；置 `True` 后低于 `RSRS_BUY_THRESHOLD` 不买入 |
 | `LIMIT_RATIO_BY_PREFIX` | 300/301/688 → 20% | 涨跌停幅度，其余 10% |
+| `RISK_ENABLED` | `True` | 风控总开关；单条阈值设为 `None` 即关闭该项 |
+| `RISK_MAX_CANDIDATES` | 5 | 第 1 名被否决后，沿排名往下最多再试几只 |
+| `RISK_MAX_CONSECUTIVE_LIMIT_UP` | 0 | 前一日涨停就不碰（拦跌停最有效的一条） |
+| `RISK_MAX_GAIN_SHORT` / `LONG` | 25% / 60% | 近 5 日、近 20 日累计涨幅上限 |
+| `RISK_MAX_BIAS` | 20% | 相对 MA20 的乖离率上限 |
+| `RISK_MAX_GAP_UP` / `DOWN` | 5% / 5% | 当日高开、低开超过该幅度不买 |
+| `MARKET_FILTER_ENABLED` | `True` | 沪深 300 跌破 MA20 时 `no_new`（或 `exit_all`） |
+| `TRAILING_STOP_RATIO` | 10% | 从持仓期间最高价回撤该比例即离场 |
+
+风控的完整规则表、默认阈值和调参建议见 [`docs/risk.md`](docs/risk.md)。
 | `LOT_SIZE` | 100 | 一手股数 |
 | `WARMUP_BARS` | 15 | 热身 K 线数 |
 
@@ -110,5 +123,7 @@ python -m pytest            # 74 passed
    导致市值条件实际失效 —— 改为使用当日收盘价，过滤真正生效。
 3. `filter_target` 的跌停判断写死 10%，对创业板/科创板不成立 ——
    改为按代码前缀取 20%/10%。
+5. 股票池为空或候选被过滤时原逻辑直接 `return`，当天持仓就没人做止损了 ——
+   现在持仓风控每根 K 线都执行。
 4. `KEEP` 信号（分数序列取不到，或开启 RSRS 后被大盘否决）不再新开仓，
    原脚本此时会照常买入。
