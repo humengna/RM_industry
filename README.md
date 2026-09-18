@@ -14,7 +14,8 @@ momentum_timing/          纯计算内核（只依赖标准库，可单元测试
 ├── config.py             全部参数，唯一的参数来源
 ├── indicators.py         一元线性回归 / 动量分数 / RSRS 修正标准分
 ├── scoring.py            打分窗口（排除当前 bar）、历史分数序列、排名
-├── risk.py               风控：过热/波动/流动性/结构指标与否决逻辑、大盘均线
+├── risk.py               日线风控：过热/波动/流动性/结构指标与否决逻辑、大盘均线
+├── intraday.py           分钟线风控：炸板/尾盘跳水/VWAP/高位派发/成交额分布
 ├── signals.py            连续下降择时、RSRS 否决、硬止损与移动止损
 ├── universe.py           涨跌停价、停牌 / ST / 市值 / 代码前缀过滤
 └── portfolio.py          整手下单量、一字涨停买不进 / 一字跌停卖不掉判断
@@ -22,7 +23,7 @@ qmt/
 └── strategy_backtest.py  QMT 回测脚本：init / handlebar / stop + 取数 + 下单
 tools/
 └── bundle_qmt.py         打包成单文件，方便直接贴进 QMT 客户端
-tests/                    119 个单元测试 + 模拟 QMT 环境的端到端测试
+tests/                    161 个单元测试 + 模拟 QMT 环境的端到端测试
 reference/                原始脚本存档
 ```
 
@@ -55,7 +56,7 @@ PROJECT_ROOT = r'D:\quant\RM_industry'
 
 ```bash
 pip install -r requirements-dev.txt
-python -m pytest            # 119 passed
+python -m pytest            # 161 passed
 ```
 
 测试不需要 QMT：`tests/fake_qmt.py` 模拟了 `ContextInfo`、`passorder`、
@@ -69,7 +70,8 @@ python -m pytest            # 119 passed
 | 1 | 大盘风控：沪深 300 跌破 MA20 则不开新仓（可配置为清仓） | `check_market` + `risk.market_is_healthy` |
 | 2 | 取板块成分股，过滤停牌 / ST / 市值不在 30~500 亿 / 跌停 | `get_stock_pool` + `universe.passes_filters` |
 | 3 | 对每只股票的对数收盘价做线性回归，按 `年化收益率 × R² 绝对值` 打分排序 | `rank_candidates` + `scoring.rank_pool` |
-| 4 | **风控体检**：连板 / 涨幅 / 乖离 / 波动 / 量能 / 次新 / 跳空，第 1 名被否决就顺延看第 2 名 | `select_target` + `risk.evaluate_candidate` |
+| 4 | **日线风控**：连板 / 涨幅 / 乖离 / 波动 / 量能 / 次新 / 跳空 | `select_target` + `risk.evaluate_candidate` |
+| 4b | **分钟线风控**：前几日炸板 / 尾盘跳水 / 收在日内低位 / 跌破 VWAP / 高位派发 / 触及跌停 / 天量滞涨；第 1 名被否决就顺延看第 2 名 | `check_intraday` + `intraday.evaluate_sessions` |
 | 5 | 计算目标股由远及近的 6 个历史动量分数 | `rank_stock_change` + `scoring.momentum_score_history` |
 | 6 | 目标股停牌 / 跌停则放弃 | `filter_target` |
 | 7 | 分数连续下降 ≥ 2 天 → `SELL`，否则 `BUY`；大盘走弱时 `BUY` 降级为 `KEEP` | `get_timing_signal` + `signals.timing_signal` |
@@ -105,6 +107,12 @@ python -m pytest            # 119 passed
 | `RISK_MAX_GAIN_SHORT` / `LONG` | 25% / 60% | 近 5 日、近 20 日累计涨幅上限 |
 | `RISK_MAX_BIAS` | 20% | 相对 MA20 的乖离率上限 |
 | `RISK_MAX_GAP_UP` / `DOWN` | 5% / 5% | 当日高开、低开超过该幅度不买 |
+| `INTRADAY_ENABLED` | `True` | 分钟线风控总开关，回看 `INTRADAY_DAYS`(=3) 个完整交易日 |
+| `INTRADAY_MAX_FAILED_LIMIT_UP` | 0 | 近 3 日炸板（摸涨停没封住）次数上限 |
+| `INTRADAY_MIN_TAIL_RETURN` | -3% | 最近一日尾盘 30 分钟跌幅下限 |
+| `INTRADAY_MAX_DOWN_AMOUNT_RATIO` | 0.60 | 下跌分钟成交额占比上限 |
+| `INTRADAY_MAX_POST_HIGH_AMOUNT_RATIO` | 0.65 | 日内最高点之后的成交额占比上限 |
+| `INTRADAY_REQUIRE_DATA` | `False` | 分钟数据缺失时是否直接否决（QMT 默认没下载分钟数据） |
 | `MARKET_FILTER_ENABLED` | `True` | 沪深 300 跌破 MA20 时 `no_new`（或 `exit_all`） |
 | `TRAILING_STOP_RATIO` | 10% | 从持仓期间最高价回撤该比例即离场 |
 

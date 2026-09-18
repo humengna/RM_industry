@@ -18,11 +18,12 @@ class FakeSeries(object):
 
 
 class FakeDataFrame(object):
-    """只实现 df.columns / len(df) / df[field].values 这几种用法。"""
+    """只实现 df.columns / df.index / len(df) / df[field].values 这几种用法。"""
 
-    def __init__(self, columns_map):
+    def __init__(self, columns_map, index=None):
         self._data = dict(columns_map)
         self.columns = list(columns_map.keys())
+        self.index = list(index) if index is not None else []
 
     def __len__(self):
         if not self._data:
@@ -59,18 +60,71 @@ class FakeDeal(object):
         self.m_strTradeDate = trade_date
 
 
+def trading_minutes(date, count=240):
+    """生成某个交易日的分钟时间戳：9:31~11:30 + 13:01~15:00。"""
+    out = []
+    hour, minute = 9, 31
+    while len(out) < count:
+        out.append('%s%02d%02d00' % (date, hour, minute))
+        minute += 1
+        if minute == 60:
+            hour, minute = hour + 1, 0
+        if hour == 11 and minute == 31:
+            hour, minute = 13, 1
+        if hour == 15 and minute == 1:
+            break
+    return out
+
+
+def minute_session(date, closes, amounts=None, highs=None, lows=None, opens=None):
+    """
+    由分钟收盘价序列生成一个交易日的分钟线。
+
+    返回 {'time': [...], 'open': [...], 'high': [...], 'low': [...],
+          'close': [...], 'volume': [...], 'amount': [...]}
+    """
+    closes = [float(c) for c in closes]
+    n = len(closes)
+    opens = list(opens) if opens else [closes[0]] + closes[:-1]
+    highs = list(highs) if highs else [max(o, c) for o, c in zip(opens, closes)]
+    lows = list(lows) if lows else [min(o, c) for o, c in zip(opens, closes)]
+    amounts = list(amounts) if amounts else [1e6] * n
+    volumes = [a / c if c > 0 else 0.0 for a, c in zip(amounts, closes)]
+    return {
+        'time': trading_minutes(date, n),
+        'open': opens,
+        'high': highs,
+        'low': lows,
+        'close': closes,
+        'volume': volumes,
+        'amount': amounts,
+    }
+
+
+def concat_sessions(sessions):
+    """把多个交易日的分钟线按时间顺序拼成一条序列。"""
+    merged = {}
+    for session in sessions:
+        for key, values in session.items():
+            merged.setdefault(key, []).extend(values)
+    return merged
+
+
 class FakeContext(object):
     """
-    prices: {股票: {字段: [按时间升序的值]}}
-    dates:  ['20240102', ...]，与价格序列一一对应
+    prices:  {股票: {字段: [按时间升序的值]}}   日线
+    dates:   ['20240102', ...]，与日线价格序列一一对应
+    minutes: {股票: {'time': [...], '字段': [...]}}  分钟线，可选
     """
 
-    def __init__(self, prices, dates, sectors=None, details=None, names=None):
+    def __init__(self, prices, dates, sectors=None, details=None, names=None,
+                 minutes=None):
         self.prices = prices
         self.dates = list(dates)
         self.sectors = sectors or {}
         self.details = details or {}
         self.names = names or {}
+        self.minutes = minutes or {}
         self.barpos = len(self.dates) - 1
         self.market_data_calls = []
 
@@ -81,7 +135,11 @@ class FakeContext(object):
     def get_market_data_ex(self, fields, stocks, period='1d', end_time='', count=1,
                            dividend_type='none', fill_data=True, subscribe=True):
         assert subscribe is False, '回测必须使用 subscribe=False 读本地数据'
-        self.market_data_calls.append((tuple(fields), tuple(stocks), count, end_time))
+        self.market_data_calls.append(
+            (tuple(fields), tuple(stocks), count, end_time, period))
+
+        if period == '1m':
+            return self._minute_data(fields, stocks, end_time, count)
 
         end_day = end_time[:8]
         end_idx = self.dates.index(end_day) if end_day in self.dates else len(self.dates) - 1
@@ -99,6 +157,31 @@ class FakeContext(object):
                 columns[field] = list(values[start_idx:end_idx + 1])
             if columns:
                 result[stock] = FakeDataFrame(columns)
+        return result
+
+    def _minute_data(self, fields, stocks, end_time, count):
+        """分钟线：取 end_time 当天收盘之前的最后 count 根。"""
+        end_day = end_time[:8]
+        result = {}
+        for stock in stocks:
+            bars = self.minutes.get(stock)
+            if not bars:
+                continue
+
+            keep = [i for i, t in enumerate(bars['time']) if str(t)[:8] <= end_day]
+            keep = keep[-count:] if count > 0 else keep
+            if not keep:
+                continue
+
+            columns = {}
+            for field in fields:
+                values = bars.get(field)
+                if values is None:
+                    continue
+                columns[field] = [values[i] for i in keep]
+            if columns:
+                result[stock] = FakeDataFrame(
+                    columns, index=[bars['time'][i] for i in keep])
         return result
 
     # ---------- 基础信息 ----------

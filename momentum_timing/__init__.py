@@ -6,7 +6,8 @@ momentum_timing 包内是与交易接口无关的纯计算逻辑，
 QMT 相关的取数与下单在 qmt/ 目录下。
 """
 
-from . import config, indicators, portfolio, risk, scoring, signals, universe
+from . import config, indicators, intraday, portfolio, risk, scoring, signals, universe
 
-__all__ = ['config', 'indicators', 'portfolio', 'risk', 'scoring', 'signals', 'universe']
+__all__ = ['config', 'indicators', 'intraday', 'portfolio', 'risk', 'scoring',
+           'signals', 'universe']
 __version__ = '0.1.0'

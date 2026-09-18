@@ -126,6 +126,36 @@ RISK_MAX_GAP_UP = 0.05              # 高开超过 5% 不追
 RISK_MAX_GAP_DOWN = 0.05            # 低开超过 5% 不接
 
 # ============================================================
+# 分钟线风控（momentum_timing/intraday.py）
+# ============================================================
+# 用"当前交易日之前"几天的分钟线和成交金额分布，识别次日容易跌停的结构：
+# 炸板、尾盘跳水、收在日内低位、跌破 VWAP、高位派发、盘中触及跌停、天量滞涨。
+INTRADAY_ENABLED = True
+INTRADAY_DAYS = 3                       # 回看最近几个完整交易日
+INTRADAY_BARS_PER_DAY = 245             # 取数时每天按多少根分钟线估算
+INTRADAY_MIN_SESSION_BARS = 60          # 分钟 bar 少于该值的交易日视为数据异常，丢弃
+# 分钟数据缺失时是否直接否决。QMT 默认不下载分钟数据，设 True 前先确认本地有数据
+INTRADAY_REQUIRE_DATA = False
+
+INTRADAY_TAIL_MINUTES = 30              # "尾盘"取最后多少分钟
+
+# --- 涨跌停结构（统计最近 INTRADAY_DAYS 天）---
+INTRADAY_MAX_FAILED_LIMIT_UP = 0        # 炸板（摸到涨停没封住）次数上限
+INTRADAY_MAX_LIMIT_DOWN_TOUCH = 0       # 盘中触及跌停次数上限
+
+# --- 最近一个交易日的日内结构 ---
+INTRADAY_MIN_TAIL_RETURN = -0.03        # 尾盘 30 分钟跌幅下限 -3%
+INTRADAY_MIN_CLOSE_POSITION = 0.20      # 收盘价在当日振幅区间中的最低位置
+INTRADAY_MIN_VWAP_GAP = -0.015          # 收盘价相对 VWAP 的最低偏离 -1.5%
+INTRADAY_MAX_DRAWDOWN = -0.07           # 日内最大回撤下限 -7%
+
+# --- 成交金额分布 ---
+INTRADAY_MAX_DOWN_AMOUNT_RATIO = 0.60   # 下跌分钟成交额占比上限（抛压主导）
+INTRADAY_MAX_TAIL_AMOUNT_RATIO = 0.35   # 尾盘成交额占比上限（配合尾盘下跌才否决）
+INTRADAY_MAX_POST_HIGH_AMOUNT_RATIO = 0.65  # 日内最高点之后的成交额占比上限
+INTRADAY_MAX_AMOUNT_SPIKE = 3.0         # 最近一日成交额 / 前几日均额（天量滞涨）
+
+# ============================================================
 # 大盘风控
 # ============================================================
 MARKET_FILTER_ENABLED = True

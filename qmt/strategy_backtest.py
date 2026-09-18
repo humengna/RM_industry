@@ -53,11 +53,16 @@ _bootstrap_sys_path()
 
 from momentum_timing.config import (
     ACCOUNT_TYPE, BACKTEST_ACCOUNT, ASSUME_LIMIT_DOWN_UNSELLABLE, CONCEPT_SECTORS,
-    DECLINE_DAYS_TO_SELL, LOOKBACK_DAYS, MARKET_FILTER_ACTION, MARKET_FILTER_ENABLED,
+    DECLINE_DAYS_TO_SELL, INTRADAY_BARS_PER_DAY, INTRADAY_DAYS, INTRADAY_ENABLED,
+    INTRADAY_REQUIRE_DATA, LOOKBACK_DAYS, MARKET_FILTER_ACTION, MARKET_FILTER_ENABLED,
     MARKET_INDEX, MARKET_MA_WINDOW, MAX_MARKET_CAP, MIN_MARKET_CAP, RISK_ENABLED,
     RISK_MAX_CANDIDATES, RSRS_ENABLED, RSRS_INDEX, RSRS_M, RSRS_N, SCORE_HISTORY_DAYS,
     STOP_LOSS_RATIO, STRATEGY_NAME, TRADING_DAYS_PER_YEAR, TRAILING_STOP_RATIO,
     WARMUP_BARS,
+)
+from momentum_timing.intraday import (
+    INTRADAY_FIELDS, IntradayParams, attach_pre_close, evaluate_sessions,
+    group_sessions, sessions_before,
 )
 from momentum_timing.indicators import rsrs_corrected_zscore
 from momentum_timing.portfolio import buy_volume, can_buy, can_sell
@@ -111,6 +116,9 @@ def init(C):
     g.bar_count = 0           # 已处理 bar 计数
     g.risk_params = RiskParams()
     g.risk_bars = history_bars_needed(g.risk_params)
+    g.intraday_params = IntradayParams()
+    g.intraday_bars = INTRADAY_BARS_PER_DAY * (INTRADAY_DAYS + 1)
+    g.intraday_warned = False
     g.position_peak = {}      # {股票: 持仓期间最高价}，用于移动止损
     g.reject_stats = {}       # {否决原因: 次数}，回测结束时汇总
 
@@ -121,6 +129,8 @@ def init(C):
           % (LOOKBACK_DAYS, DECLINE_DAYS_TO_SELL, STOP_LOSS_RATIO * 100))
     print('  风控: %s (候选顺延 %d 只, 需要 %d 根历史K线)'
           % ('开' if RISK_ENABLED else '关', RISK_MAX_CANDIDATES, g.risk_bars))
+    print('  分钟线风控: %s (回看 %d 个交易日, 取 %d 根1分钟K线)'
+          % ('开' if INTRADAY_ENABLED else '关', INTRADAY_DAYS, g.intraday_bars))
     print('  大盘风控: %s (%s 跌破 MA%d -> %s)'
           % ('开' if MARKET_FILTER_ENABLED else '关', MARKET_INDEX,
              MARKET_MA_WINDOW, MARKET_FILTER_ACTION))
@@ -227,12 +237,12 @@ def stop(C):
 # 行情读取工具
 # ============================================================
 
-def get_market_data(C, fields, stocks, bar_date, count, fill_data=True):
-    """统一的历史行情读取：period='1d'，不复权，读本地数据。"""
+def get_market_data(C, fields, stocks, bar_date, count, fill_data=True, period='1d'):
+    """统一的历史行情读取：默认日线，不复权，读本地数据。"""
     try:
         return C.get_market_data_ex(
             fields, stocks,
-            period='1d',
+            period=period,
             end_time=bar_date,
             count=count,
             dividend_type='none',
@@ -258,6 +268,38 @@ def series(data, stock, field):
         except (TypeError, ValueError):
             out.append(float('nan'))
     return out
+
+
+def bar_times(data, stock):
+    """
+    取每根 K 线的时间戳，格式 'YYYYMMDDHHMMSS'。
+
+    QMT 的 get_market_data_ex 把时间放在 DataFrame 的 index 上；
+    部分版本额外给一列毫秒时间戳 time，这里都兼容。
+    """
+    if not data or stock not in data or data[stock] is None:
+        return []
+    df = data[stock]
+    if len(df) == 0:
+        return []
+
+    try:
+        times = [str(t) for t in df.index]
+        if times and len(times[0]) >= 8 and times[0][:8].isdigit():
+            return times
+    except (AttributeError, TypeError):
+        pass
+
+    if 'time' in df.columns:
+        out = []
+        for value in df['time'].values:
+            try:
+                out.append(timetag_to_datetime(int(value), '%Y%m%d%H%M%S'))
+            except Exception:
+                out.append('')
+        return out
+
+    return []
 
 
 def last_value(data, stock, field, default=0.0):
@@ -429,11 +471,12 @@ def select_target(pool, C, bar_date):
 
     candidates = ranked[:RISK_MAX_CANDIDATES]
     scores = dict(candidates)
-    risk_data = get_market_data(C, RISK_FIELDS, [s for s, _ in candidates],
-                                bar_date, g.risk_bars + 1)
+    stocks = [s for s, _ in candidates]
+    risk_data = get_market_data(C, RISK_FIELDS, stocks, bar_date, g.risk_bars + 1)
+    minute_cache = {}   # 分钟线按需拉取：日线就被否决的候选不必再取
 
     def evaluator(stock):
-        return check_risk(stock, C, bar_date, risk_data, scores.get(stock))
+        return check_risk(stock, C, bar_date, risk_data, scores.get(stock), minute_cache)
 
     target, result, rejected = pick_first_passing(candidates, evaluator, RISK_MAX_CANDIDATES)
 
@@ -445,7 +488,7 @@ def select_target(pool, C, bar_date):
     return target, result
 
 
-def check_risk(stock, C, bar_date, risk_data, score=None):
+def check_risk(stock, C, bar_date, risk_data, score=None, minute_cache=None):
     """
     对单只候选股做风控体检。
 
@@ -469,7 +512,7 @@ def check_risk(stock, C, bar_date, risk_data, score=None):
 
     _name, _total_value, float_volume, open_date = get_detail(C, stock, closes[-1])
 
-    return evaluate_candidate(
+    result = evaluate_candidate(
         stock, history,
         today=today,
         params=g.risk_params,
@@ -477,6 +520,65 @@ def check_risk(stock, C, bar_date, risk_data, score=None):
         float_volume=float_volume,
         score=score,
     )
+
+    # 日线就没过的候选不必再拉分钟线（分钟数据量大，能省则省）
+    if INTRADAY_ENABLED and result.passed:
+        reasons, metrics = check_intraday(stock, C, bar_date, minute_cache)
+        result.reasons.extend(reasons)
+        result.metrics.update(metrics)
+        result.passed = not result.reasons
+
+    return result
+
+
+def get_minute_data(stock, C, bar_date, cache=None):
+    """按需拉取单只股票的分钟线，同一根 bar 内复用。"""
+    if cache is not None and stock in cache:
+        return cache[stock]
+
+    data = get_market_data(C, list(INTRADAY_FIELDS), [stock], bar_date,
+                           g.intraday_bars, period='1m')
+    if cache is not None:
+        cache[stock] = data
+    return data
+
+
+def check_intraday(stock, C, bar_date, minute_cache=None):
+    """
+    分钟线风控：只用当前交易日之前的完整交易日数据。
+
+    返回 (reasons, metrics)。分钟数据缺失时按 INTRADAY_REQUIRE_DATA 决定是否否决——
+    QMT 默认不下载分钟线，贸然否决会让策略整段空仓。
+    """
+    minute_data = get_minute_data(stock, C, bar_date, minute_cache)
+    times = bar_times(minute_data, stock)
+    if not times:
+        warn_missing_intraday(stock)
+        return (['intraday_no_data'] if INTRADAY_REQUIRE_DATA else []), {}
+
+    fields = {}
+    for name in INTRADAY_FIELDS:
+        fields[name] = series(minute_data, stock, name)
+
+    sessions = sessions_before(group_sessions(times, fields), bar_date)
+    attach_pre_close(sessions)
+
+    reasons, metrics = evaluate_sessions(stock, sessions, g.intraday_params)
+    if 'intraday_no_data' in reasons:
+        warn_missing_intraday(stock)
+        if not INTRADAY_REQUIRE_DATA:
+            reasons = [r for r in reasons if r != 'intraday_no_data']
+    return reasons, metrics
+
+
+def warn_missing_intraday(stock):
+    """分钟数据缺失只提示一次，避免刷屏。"""
+    if g.intraday_warned:
+        return
+    g.intraday_warned = True
+    print('[分钟线风控] %s 取不到分钟数据，%s。'
+          '请在 QMT 中补下载 1 分钟历史数据，或把 INTRADAY_ENABLED 设为 False'
+          % (stock, '直接否决' if INTRADAY_REQUIRE_DATA else '本项检查跳过'))
 
 
 # ============================================================

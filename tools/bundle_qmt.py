@@ -23,6 +23,7 @@ MODULES = [
     'indicators',
     'universe',
     'risk',
+    'intraday',
     'signals',
     'portfolio',
     'scoring',

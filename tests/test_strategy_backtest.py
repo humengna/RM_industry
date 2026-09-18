@@ -257,9 +257,10 @@ def test_all_market_data_calls_are_local_and_bounded():
     run_bar(module, context, broker)
 
     assert context.market_data_calls, '应当读取过行情'
-    for fields, stocks, count, end_time in context.market_data_calls:
+    for fields, stocks, count, end_time, period in context.market_data_calls:
         assert count >= 1
         assert end_time.endswith('150000')
+        assert period in ('1d', '1m')
 
 
 def test_rsrs_returns_none_when_history_too_short():
@@ -502,3 +503,181 @@ def test_runs_over_many_bars_without_error():
     assert module.g.bar_count == N_BARS
     assert set(module.g.position_peak) <= {'600001.SH'}
     assert module.g.reject_stats
+
+
+# ---------- 分钟线风控 ----------
+
+from fake_qmt import concat_sessions, minute_session   # noqa: E402
+
+MINUTE_BARS = 240
+
+
+def minute_path(start, end, bars=MINUTE_BARS):
+    step = (end - start) / float(bars - 1)
+    return [round(start + step * i, 3) for i in range(bars)]
+
+
+def smooth_minutes(closes, day_indexes, amounts=None):
+    """按日线收盘价生成平滑的分钟线（每天从前收线性走到当日收盘）。"""
+    sessions = []
+    for i in day_indexes:
+        sessions.append(minute_session(DATES[i],
+                                       minute_path(closes[i - 1], closes[i]),
+                                       amounts=amounts))
+    return sessions
+
+
+def hot_stock_daily():
+    """最后三天连续大涨（但没涨停）的日线，用来排到第 1 名。"""
+    closes = [10.0] * (N_BARS - 4) + [10.6, 11.24, 11.91, 11.91]
+    return closes
+
+
+def build_hot_context(last_session, extra_days=(N_BARS - 5, N_BARS - 4, N_BARS - 3)):
+    """第 1 名是 600005，其最后一个完整交易日的分钟线由调用方指定。"""
+    closes = hot_stock_daily()
+    sessions = smooth_minutes(closes, list(extra_days))
+    sessions.append(last_session)
+
+    context = build_context(prices={'600005.SH': make_prices(closes)})
+    context.minutes = {'600005.SH': concat_sessions(sessions)}
+    return context
+
+
+def test_failed_limit_up_candidate_is_rejected_by_minute_data():
+    """日线看不出问题（收盘没涨停），分钟线能看到炸板。"""
+    module = load_strategy()
+    closes = hot_stock_daily()
+    pre_close = closes[N_BARS - 3]                 # 11.24
+    limit_up = round(pre_close * 1.1, 2)           # 12.36
+    path = (minute_path(pre_close, limit_up, 100)
+            + minute_path(limit_up, closes[N_BARS - 2], MINUTE_BARS - 100))
+    highs = [max(c, limit_up if 95 <= i <= 105 else c) for i, c in enumerate(path)]
+    blown = minute_session(DATES[N_BARS - 2], path, highs=highs)
+
+    context = build_hot_context(blown)
+    broker = FakeBroker(available=100000.0)
+    run_bar(module, context, broker)
+
+    assert 'failed_limit_up' in module.g.reject_stats
+    assert module.g.today_target == '600001.SH'
+
+
+def test_tail_selloff_candidate_is_rejected_by_minute_data():
+    module = load_strategy()
+    closes = hot_stock_daily()
+    pre_close = closes[N_BARS - 3]
+    level = round(pre_close * 1.09, 2)
+    path = [level] * (MINUTE_BARS - 30) + minute_path(level, closes[N_BARS - 2], 30)
+    amounts = [1e6] * (MINUTE_BARS - 30) + [1e7] * 30      # 尾盘放量砸盘
+    dumped = minute_session(DATES[N_BARS - 2], path, amounts=amounts)
+
+    context = build_hot_context(dumped)
+    broker = FakeBroker(available=100000.0)
+    run_bar(module, context, broker)
+
+    rejected = module.g.reject_stats
+    assert 'tail_selloff' in rejected or 'tail_dump' in rejected
+    assert module.g.today_target == '600001.SH'
+
+
+def test_clean_minute_data_passes():
+    module = load_strategy()
+    closes = hot_stock_daily()
+    sessions = smooth_minutes(closes, [N_BARS - 5, N_BARS - 4, N_BARS - 3, N_BARS - 2])
+    context = build_context(prices={'600005.SH': make_prices(closes)})
+    context.minutes = {'600005.SH': concat_sessions(sessions)}
+    broker = FakeBroker(available=100000.0)
+    run_bar(module, context, broker)
+
+    assert module.g.today_target == '600005.SH'
+    assert [o['stock'] for o in broker.orders if o['op_type'] == module.OP_BUY] \
+        == ['600005.SH']
+
+
+def test_current_day_minutes_are_not_used():
+    """当日分钟线在 09:31 还不存在，即使数据里有也不能参与决策。"""
+    module = load_strategy()
+    closes = hot_stock_daily()
+    sessions = smooth_minutes(closes, [N_BARS - 5, N_BARS - 4, N_BARS - 3, N_BARS - 2])
+    # 当日盘中一路砸到跌停——如果被误用，600005 会被否决
+    crash = minute_session(DATES[N_BARS - 1],
+                           minute_path(closes[N_BARS - 2], closes[N_BARS - 2] * 0.9))
+    sessions.append(crash)
+
+    context = build_context(prices={'600005.SH': make_prices(closes)})
+    context.minutes = {'600005.SH': concat_sessions(sessions)}
+    broker = FakeBroker(available=100000.0)
+    run_bar(module, context, broker)
+
+    assert module.g.today_target == '600005.SH'
+
+
+def test_missing_minute_data_is_skipped_by_default():
+    module = load_strategy()
+    context = build_context()            # 没有任何分钟数据
+    broker = FakeBroker(available=100000.0)
+    run_bar(module, context, broker)
+
+    assert module.g.intraday_warned is True
+    assert [o for o in broker.orders if o['op_type'] == module.OP_BUY]
+
+
+def test_missing_minute_data_rejects_when_required():
+    module = load_strategy()
+    module.INTRADAY_REQUIRE_DATA = True
+    context = build_context()
+    broker = FakeBroker(available=100000.0)
+    run_bar(module, context, broker)
+
+    assert broker.orders == []
+    assert module.g.reject_stats.get('intraday_no_data')
+
+
+def test_intraday_can_be_disabled():
+    module = load_strategy()
+    module.INTRADAY_ENABLED = False
+    closes = hot_stock_daily()
+    pre_close = closes[N_BARS - 3]
+    limit_up = round(pre_close * 1.1, 2)
+    path = (minute_path(pre_close, limit_up, 100)
+            + minute_path(limit_up, closes[N_BARS - 2], MINUTE_BARS - 100))
+    highs = [max(c, limit_up if 95 <= i <= 105 else c) for i, c in enumerate(path)]
+    context = build_hot_context(minute_session(DATES[N_BARS - 2], path, highs=highs))
+    broker = FakeBroker(available=100000.0)
+    run_bar(module, context, broker)
+
+    assert module.g.today_target == '600005.SH'   # 关掉分钟线风控就拦不住了
+
+
+def test_minute_data_is_fetched_with_1m_period():
+    module = load_strategy()
+    context = build_context()
+    broker = FakeBroker(available=100000.0)
+    install_fake_qmt(module, context, broker)
+    module.init(context)
+    module.g.bar_count = module.WARMUP_BARS - 1
+    module.handlebar(context)
+
+    minute_calls = [c for c in context.market_data_calls if c[4] == '1m']
+    assert minute_calls, '应当用 period=1m 请求过分钟线'
+    fields, _stocks, count, _end, _period = minute_calls[0]
+    assert 'amount' in fields and 'close' in fields
+    assert count == module.INTRADAY_BARS_PER_DAY * (module.INTRADAY_DAYS + 1)
+
+
+def test_minute_data_not_fetched_for_daily_rejected_candidate():
+    """日线就被否决的候选（连板票）不应再去拉分钟线。"""
+    module = load_strategy()
+    hot = make_prices(limit_up_prices(N_BARS - 3, 2))
+    context = build_context(prices={'600004.SH': hot})
+    broker = FakeBroker(available=100000.0)
+    run_bar(module, context, broker)
+
+    minute_stocks = set()
+    for _fields, stocks, _count, _end, period in context.market_data_calls:
+        if period == '1m':
+            minute_stocks.update(stocks)
+
+    assert '600004.SH' not in minute_stocks
+    assert '600001.SH' in minute_stocks
