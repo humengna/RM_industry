@@ -2,3 +2,5 @@
 # QMT 客户端自带 numpy / pandas）。以下仅为跑单元测试所需。
 pytest>=7.0
 numpy>=1.20
+# 只有 tools/import_constituents_xlsx.py（Excel 成分股导入）需要
+openpyxl>=3.0
