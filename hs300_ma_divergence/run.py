@@ -44,6 +44,18 @@ def run_backtest(start=config.START_DATE, end=config.END_DATE, cash=config.INIT_
                  respect_limits=config.RESPECT_PRICE_LIMITS, slippage=config.SLIPPAGE,
                  max_weight=config.MAX_POSITION_WEIGHT, write_files=True):
     """跑一次完整回测，返回 (result, summary, files)。"""
+    if not max_holdings or max_holdings < 1:
+        raise ValueError('持仓股票数量必须 >= 1，当前为 %s' % max_holdings)
+
+    target_weight = 1.0 / max_holdings
+    effective_weight = target_weight if max_weight is None else min(target_weight, max_weight)
+
+    print('[配置] 持仓 %d 只，单只目标仓位 %.1f%%%s；排序 %s；初始资金 %.0f'
+          % (max_holdings, effective_weight * 100,
+             '（受上限 %.0f%% 约束）' % (max_weight * 100)
+             if max_weight is not None and target_weight > max_weight else '',
+             '发散度最小优先' if ascending else '发散度最大优先', cash))
+
     market = MarketData(xt=xt, dividend_type=dividend_type)
     data_start = shift_date(start, WARMUP_CALENDAR_DAYS)
 
@@ -136,8 +148,9 @@ def build_parser():
     parser.add_argument('--start', default=config.START_DATE, help='回测开始日 YYYYMMDD')
     parser.add_argument('--end', default=config.END_DATE, help='回测结束日 YYYYMMDD')
     parser.add_argument('--cash', type=float, default=config.INIT_CASH, help='初始资金')
-    parser.add_argument('--max-holdings', type=int, default=config.MAX_HOLDINGS,
-                        help='最大持仓数，默认 %d' % config.MAX_HOLDINGS)
+    parser.add_argument('--max-holdings', '-n', type=int, default=config.MAX_HOLDINGS,
+                        help='持仓股票数量，默认 %d（单只目标仓位 = 1/该值）'
+                             % config.MAX_HOLDINGS)
     parser.add_argument('--max-weight', type=float, default=config.MAX_POSITION_WEIGHT,
                         help='单只票的仓位上限，默认 %.2f' % config.MAX_POSITION_WEIGHT)
     parser.add_argument('--download', action='store_true',
