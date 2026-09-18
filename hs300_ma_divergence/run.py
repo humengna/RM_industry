@@ -50,7 +50,8 @@ def run_backtest(start=config.START_DATE, end=config.END_DATE, cash=config.INIT_
     print('[1/5] 读取交易日历 %s ~ %s' % (data_start, end))
     if download:
         market.download([config.INDEX_CODE], data_start, end)
-    all_days = market.trading_days(config.INDEX_CODE, data_start, end)
+    all_days = market.trading_days(config.INDEX_CODE, data_start, end,
+                                   download_if_missing=download)
     days = [d for d in all_days if d >= str(start)[:8]]
     if not days:
         raise ValueError('区间 %s ~ %s 内没有交易日' % (start, end))
@@ -109,10 +110,15 @@ def run_backtest(start=config.START_DATE, end=config.END_DATE, cash=config.INIT_
 
 
 def dump_constituents(start, end, xt=None, cache_file=config.CONSTITUENT_CACHE,
-                      granularity=config.CONSTITUENT_GRANULARITY):
-    """只抓历史成分股并写缓存。"""
+                      granularity=config.CONSTITUENT_GRANULARITY, download=True):
+    """
+    只抓历史成分股并写缓存。
+
+    需要一份交易日历来决定查哪些日期；本地还没有指数日线时会自动补下载。
+    """
     market = MarketData(xt=xt)
-    days = market.trading_days(config.INDEX_CODE, shift_date(start, 10), end)
+    days = market.trading_days(config.INDEX_CODE, shift_date(start, 10), end,
+                               download_if_missing=download)
     days = [d for d in days if d >= str(start)[:8]]
     provider = ConstituentProvider(
         sector=config.INDEX_SECTOR, index_code=config.INDEX_CODE, xt=market.xt,
@@ -160,7 +166,7 @@ def main(argv=None):
 
     if args.dump_constituents:
         dump_constituents(args.start, args.end, xt=xt, cache_file=args.cache,
-                          granularity=args.granularity)
+                          granularity=args.granularity, download=True)
         return 0
 
     run_backtest(

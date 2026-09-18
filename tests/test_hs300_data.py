@@ -114,3 +114,47 @@ def test_import_xtdata_message_is_actionable():
         with pytest.raises(ImportError) as excinfo:
             import_xtdata()
         assert 'QMT' in str(excinfo.value)
+
+
+# ---------- 交易日历 ----------
+
+def test_calendar_prefers_get_trading_dates_api():
+    """有 get_trading_dates 就用它，不依赖本地已下载的指数日线。"""
+    xt = FakeXtdata({}, trading_dates=DAYS)
+    market = MarketData(xt=xt)
+
+    assert market.calendar_from_api(DAYS[0], DAYS[-1]) == DAYS
+    assert market.trading_days('000300.SH', DAYS[0], DAYS[-1]) == DAYS
+    assert xt.market_data_calls == []      # 完全没读行情
+
+
+def test_calendar_api_respects_range():
+    xt = FakeXtdata({}, trading_dates=DAYS)
+    market = MarketData(xt=xt)
+    assert market.calendar_from_api(DAYS[2], DAYS[5]) == DAYS[2:6]
+
+
+def test_calendar_falls_back_to_index_bars():
+    """旧版没有 get_trading_dates 时，退回用指数日线当日历。"""
+    market = MarketData(xt=build_xt())          # 该 fake 没有 get_trading_dates
+    assert market.trading_days('000300.SH', DAYS[0], DAYS[-1]) == DAYS
+
+
+def test_trading_days_downloads_index_when_missing():
+    """本地数据目录是空的时候，自动补下载指数日线再建日历。"""
+    xt = FakeXtdata({}, pending_bars={'000300.SH': make_bars(DAYS, [3800.0] * len(DAYS))})
+    market = MarketData(xt=xt)
+
+    with pytest.raises(ValueError):
+        market.trading_days('000300.SH', DAYS[0], DAYS[-1])   # 不允许下载就报错
+
+    assert market.trading_days('000300.SH', DAYS[0], DAYS[-1],
+                               download_if_missing=True) == DAYS
+    assert '000300.SH' in xt.downloaded
+
+
+def test_missing_index_error_mentions_download_flag():
+    market = MarketData(xt=FakeXtdata({}))
+    with pytest.raises(ValueError) as excinfo:
+        market.trading_days('000300.SH', DAYS[0], DAYS[-1])
+    assert '--download' in str(excinfo.value)

@@ -141,3 +141,18 @@ def test_dump_constituents_writes_cache(tmp_path):
 def test_shift_date():
     assert shift_date('20240301', 1) == '20240229'      # 闰年
     assert shift_date('20240101', 1) == '20231231'
+
+
+def test_dump_constituents_works_on_empty_data_dir(tmp_path):
+    """本地还没有任何行情时，--dump-constituents 也要能跑（自动补下载指数）。"""
+    from fake_xtdata import FakeXtdata
+
+    full = build_xt()
+    index_bars = full.bars.pop('000300.SH')
+    xt = FakeXtdata(full.bars, SECTORS, pending_bars={'000300.SH': index_bars})
+
+    path = str(tmp_path / 'hs300.csv')
+    provider = dump_constituents(BACKTEST_START, BACKTEST_END, xt=xt, cache_file=path)
+
+    assert '000300.SH' in xt.downloaded
+    assert provider.all_members()

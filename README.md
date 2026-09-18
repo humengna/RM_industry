@@ -33,7 +33,7 @@ qmt/
 └── strategy_backtest.py  QMT 回测脚本：init / handlebar / stop + 取数 + 下单
 tools/
 └── bundle_qmt.py         打包成单文件，方便直接贴进 QMT 客户端
-tests/                    269 个单元测试 + 模拟 QMT 环境的端到端测试
+tests/                    275 个单元测试 + 模拟 QMT 环境的端到端测试
 reference/                原始脚本存档
 ```
 
@@ -66,7 +66,7 @@ PROJECT_ROOT = r'D:\quant\RM_industry'
 
 ```bash
 pip install -r requirements-dev.txt
-python -m pytest            # 269 passed
+python -m pytest            # 275 passed
 ```
 
 测试不需要 QMT：`tests/fake_qmt.py` 模拟了 `ContextInfo`、`passorder`、
