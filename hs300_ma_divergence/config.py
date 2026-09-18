@@ -27,7 +27,11 @@ ALLOW_CURRENT_CONSTITUENTS_FALLBACK = False
 MA_PERIODS = (5, 10, 20, 30, 60)
 HISTORY_COUNT = max(MA_PERIODS) + 1     # 至少需要的历史长度
 
-MAX_HOLDINGS = 2                        # 最大持仓数
+MAX_HOLDINGS = 2                        # 持仓股票数量
+# 从排名第几位开始取（1 起算，闭区间）。默认 1 = 取第 1 名开始的 MAX_HOLDINGS 只。
+# 例：RANK_START=3、MAX_HOLDINGS=3 -> 取排名第 3、4、5 名，跳过最前面 2 名。
+# 排名方向由 SORT_ASCENDING 决定：True=发散度最小的排第 1，False=最大的排第 1。
+RANK_START = 1
 TARGET_WEIGHT = 1.0 / MAX_HOLDINGS      # 单股目标仓位 = 1 / 持仓数
 # 单只票的仓位上限（按下单时的总资产算）。持仓数少时这条才真正起作用：
 # MAX_HOLDINGS=2 -> TARGET_WEIGHT=50%，与上限一致；

@@ -193,3 +193,58 @@ def test_invalid_holdings_rejected(tmp_path):
     with pytest.raises(ValueError) as excinfo:
         run(tmp_path, max_holdings=0)
     assert '必须 >= 1' in str(excinfo.value)
+
+
+# ---------- 排名区间 ----------
+
+def test_rank_range_parsing():
+    from hs300_ma_divergence.run import parse_rank_range
+
+    assert parse_rank_range('3-5') == (3, 3)
+    assert parse_rank_range('1-2') == (1, 2)
+    assert parse_rank_range('4') == (4, 1)
+
+    for bad in ('0-3', '5-2', '-1'):
+        with pytest.raises(ValueError):
+            parse_rank_range(bad)
+
+
+def test_rank_start_shifts_the_picked_stocks(tmp_path):
+    """同一天，取倒序第 1 名和第 2 名应当是不同的票。"""
+    first, _s1, _f1 = run(tmp_path, ascending=False, max_holdings=1, rank_start=1)
+    second, _s2, _f2 = run(tmp_path, ascending=False, max_holdings=1, rank_start=2)
+
+    def targets(result):
+        return {row['date']: tuple(row['target']) for row in result['daily_signals']
+                if row['candidates'] >= 2}
+
+    a, b = targets(first), targets(second)
+    shared = set(a) & set(b)
+    assert shared, '需要有候选数 >= 2 的交易日'
+    assert all(a[day] != b[day] for day in shared), '第 1 名和第 2 名不可能相同'
+
+
+def test_rank_start_beyond_candidates_means_no_position(tmp_path):
+    """候选不够时当天不开仓：排名起点设到 50，整段回测应该一笔都不成交。"""
+    result, _summary, _files = run(tmp_path, max_holdings=2, rank_start=50)
+    assert result['trades'] == []
+    assert all(row['target'] == [] for row in result['daily_signals'])
+
+
+def test_rank_start_printed_at_startup(tmp_path, capsys):
+    run(tmp_path, ascending=False, max_holdings=3, rank_start=3)
+    out = capsys.readouterr().out
+    assert '发散度倒序第 3~5 名' in out
+
+
+def test_rank_range_recorded_in_summary(tmp_path):
+    _result, _summary, files = run(tmp_path, max_holdings=3, rank_start=3)
+    with open(files['summary'], encoding='utf-8') as fp:
+        text = fp.read()
+    assert 'rank_range' in text and '3-5' in text
+
+
+def test_invalid_rank_start_rejected(tmp_path):
+    with pytest.raises(ValueError) as excinfo:
+        run(tmp_path, rank_start=0)
+    assert '排名起点' in str(excinfo.value)

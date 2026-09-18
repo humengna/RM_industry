@@ -169,3 +169,47 @@ def test_default_config_is_ascending():
     from hs300_ma_divergence import config
 
     assert config.SORT_ASCENDING is True
+
+
+# ---------- 排名区间 ----------
+
+def test_rank_start_skips_leading_names():
+    items = [{'stock': 'S%d' % i, 'score': i / 10.0} for i in range(8)]
+
+    # 倒序：分数大的排第 1 -> S7, S6, S5, S4, ...
+    picked = signals.rank(items, top_n=3, ascending=False, start=3)
+    assert [x['stock'] for x in picked] == ['S5', 'S4', 'S3']
+
+    # 升序：分数小的排第 1 -> S0, S1, S2, ...
+    picked = signals.rank(items, top_n=3, ascending=True, start=3)
+    assert [x['stock'] for x in picked] == ['S2', 'S3', 'S4']
+
+
+def test_rank_start_one_is_the_plain_top_n():
+    items = [{'stock': 'S%d' % i, 'score': i / 10.0} for i in range(8)]
+    assert signals.rank(items, top_n=3, ascending=False, start=1) == \
+        signals.rank(items, top_n=3, ascending=False)
+
+
+def test_rank_start_beyond_candidates_returns_empty():
+    """候选不够时当天不开仓，而不是退而求其次拿前面的。"""
+    items = [{'stock': 'S%d' % i, 'score': i / 10.0} for i in range(2)]
+    assert signals.rank(items, top_n=3, ascending=False, start=3) == []
+
+
+def test_rank_start_partially_covered():
+    items = [{'stock': 'S%d' % i, 'score': i / 10.0} for i in range(4)]
+    picked = signals.rank(items, top_n=3, ascending=False, start=3)
+    assert [x['stock'] for x in picked] == ['S1', 'S0']      # 只够两只
+
+
+def test_select_passes_rank_start_through():
+    close_map = {}
+    for i in range(8):
+        close_map['60000%d.SH' % i] = accelerating(accel=0.00002 + 0.00002 * i)
+
+    target, candidates = signals.select(close_map, top_n=3, ascending=False, start=3)
+    ordered = sorted((item['score'] for item in candidates), reverse=True)
+
+    assert sorted((item['score'] for item in target), reverse=True) == ordered[2:5]
+    assert [item['stock'] for item in target] == ['600005.SH', '600004.SH', '600003.SH']
